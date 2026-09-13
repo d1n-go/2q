@@ -1,0 +1,143 @@
+// Package ring implements a fixed-capacity intrusive ring of key/value
+// slots backed by a single slice, combined with a key index. It replaces
+// the previous container/list-based approach (a doubly linked list of
+// heap-allocated elements plus a separate map) used by the lru and fifo
+// packages: all node storage is preallocated once in New, and links are
+// plain slice indices instead of pointers.
+package ring
+
+type node[K comparable, V any] struct {
+	key        K
+	value      *V
+	prev, next int32
+}
+
+// Ring holds size real slots (nodes[0:size]) linked into a circular list
+// around a sentinel node at index root, mirroring the structure of
+// container/list: root.next is the front (most recently used/inserted)
+// slot and root.prev is the back (eviction victim) slot.
+type Ring[K comparable, V any] struct {
+	nodes []node[K, V]
+	index map[K]int32
+	root  int32
+}
+
+// New creates a Ring with size preallocated, empty slots.
+func New[K comparable, V any](size int) *Ring[K, V] {
+	r := &Ring[K, V]{
+		nodes: make([]node[K, V], size+1),
+		index: make(map[K]int32, size),
+		root:  int32(size),
+	}
+
+	if size == 0 {
+		r.nodes[r.root].prev = r.root
+		r.nodes[r.root].next = r.root
+		return r
+	}
+
+	for i := int32(0); i < int32(size); i++ {
+		prev, next := i-1, i+1
+		if i == 0 {
+			prev = r.root
+		}
+		if int(i) == size-1 {
+			next = r.root
+		}
+		r.nodes[i].prev = prev
+		r.nodes[i].next = next
+	}
+	r.nodes[r.root].next = 0
+	r.nodes[r.root].prev = int32(size) - 1
+
+	return r
+}
+
+// Find returns the slot index holding key, if any.
+func (r *Ring[K, V]) Find(key K) (int32, bool) {
+	i, ok := r.index[key]
+	return i, ok
+}
+
+// Key returns the key currently stored in slot i.
+func (r *Ring[K, V]) Key(i int32) K {
+	return r.nodes[i].key
+}
+
+// Value returns the value pointer currently stored in slot i (nil for an
+// empty slot).
+func (r *Ring[K, V]) Value(i int32) *V {
+	return r.nodes[i].value
+}
+
+// SetValue replaces the value stored in slot i, keeping its key and
+// position unchanged.
+func (r *Ring[K, V]) SetValue(i int32, v *V) {
+	r.nodes[i].value = v
+}
+
+// Back returns the index of the back (least recently used/oldest) slot.
+func (r *Ring[K, V]) Back() int32 {
+	return r.nodes[r.root].prev
+}
+
+func (r *Ring[K, V]) move(e, at int32) {
+	if e == at {
+		return
+	}
+
+	r.nodes[r.nodes[e].prev].next = r.nodes[e].next
+	r.nodes[r.nodes[e].next].prev = r.nodes[e].prev
+
+	r.nodes[e].prev = at
+	r.nodes[e].next = r.nodes[at].next
+	r.nodes[r.nodes[e].prev].next = e
+	r.nodes[r.nodes[e].next].prev = e
+}
+
+// MoveToFront moves slot e to the front of the ring.
+func (r *Ring[K, V]) MoveToFront(e int32) {
+	if r.nodes[r.root].next == e {
+		return
+	}
+	r.move(e, r.root)
+}
+
+// MoveToBack moves slot e to the back of the ring.
+func (r *Ring[K, V]) MoveToBack(e int32) {
+	if r.nodes[r.root].prev == e {
+		return
+	}
+	r.move(e, r.nodes[r.root].prev)
+}
+
+// Evict removes whatever key currently occupies slot i from the index,
+// installs key/value in its place, moves it to the front, and returns
+// the key/value that were evicted (evictedValue is nil if the slot was
+// empty).
+func (r *Ring[K, V]) Evict(i int32, key K, value *V) (evictedKey K, evictedValue *V) {
+	evictedKey, evictedValue = r.nodes[i].key, r.nodes[i].value
+	// An empty slot was never indexed (its key is just K's zero value,
+	// which may coincide with a real, unrelated key elsewhere in the
+	// ring) — only clear the index for a slot that actually held a value.
+	if evictedValue != nil {
+		delete(r.index, evictedKey)
+	}
+
+	r.nodes[i].key = key
+	r.nodes[i].value = value
+	r.index[key] = i
+	r.MoveToFront(i)
+
+	return evictedKey, evictedValue
+}
+
+// DeleteIndex removes key from the index without touching any slot.
+func (r *Ring[K, V]) DeleteIndex(key K) {
+	delete(r.index, key)
+}
+
+// Len returns the number of slots currently associated with a key.
+func (r *Ring[K, V]) Len() int {
+	return len(r.index)
+}

@@ -1,8 +1,8 @@
 package twoqueue
 
 import (
-	"github.com/floatdrop/fifo"
-	"github.com/floatdrop/lru"
+	"github.com/d1n-go/2q/internal/fifo"
+	"github.com/d1n-go/2q/internal/lru"
 )
 
 const (

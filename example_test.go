@@ -3,7 +3,7 @@ package twoqueue_test
 import (
 	"fmt"
 
-	twoqueue "github.com/floatdrop/2q"
+	twoqueue "github.com/d1n-go/2q"
 )
 
 func ExampleTwoQueue() {
