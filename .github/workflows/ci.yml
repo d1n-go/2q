@@ -9,6 +9,7 @@ on:
       - v*
     branches:
       - main
+  workflow_dispatch: {}
 
 jobs:
   build:
