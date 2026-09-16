@@ -1,0 +1,54 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to fuzz each target"
+        default: "300"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: ./internal/ring
+            func: FuzzRingAgainstModel
+          - pkg: .
+            func: FuzzTwoQueueAgainstOracle
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      # The corpus of "interesting" inputs found by previous runs lives under
+      # GOCACHE, not in the repo. Restoring it lets each scheduled run keep
+      # exploring from where the last one left off instead of starting cold.
+      - name: Restore fuzz corpus cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-${{ matrix.func }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-${{ matrix.func }}-
+
+      - name: Fuzz ${{ matrix.func }}
+        run: go test ${{ matrix.pkg }} -run '^$' -fuzz '^${{ matrix.func }}$' -fuzztime "${{ github.event.inputs.seconds || '300' }}s"
+
+      # A failure writes the minimal reproducing input to testdata/fuzz/<func>/
+      # in the working tree. Upload it so it can be pulled down and committed
+      # as a permanent regression seed alongside the fix.
+      - name: Upload failing corpus entry
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failure-${{ strategy.job-index }}
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore

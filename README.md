@@ -1,6 +1,7 @@
 # 2q
 [![Go Reference](https://pkg.go.dev/badge/github.com/d1n-go/2q.svg)](https://pkg.go.dev/github.com/d1n-go/2q)
 [![CI](https://github.com/d1n-go/2q/actions/workflows/ci.yml/badge.svg)](https://github.com/d1n-go/2q/actions/workflows/ci.yml)
+[![Fuzz](https://github.com/d1n-go/2q/actions/workflows/fuzz.yml/badge.svg)](https://github.com/d1n-go/2q/actions/workflows/fuzz.yml)
 [![codecov](https://codecov.io/gh/d1n-go/2q/branch/main/graph/badge.svg)](https://codecov.io/gh/d1n-go/2q)
 [![License: MIT](https://img.shields.io/github/license/d1n-go/2q)](LICENSE)
 
@@ -107,4 +108,8 @@ name        old allocs/op  new allocs/op  delta
 ```
 
 At the public `TwoQueue` API level, performance is on par with the original (one workload slightly faster, one slightly slower, both within single-digit noise), with identical memory/allocation profile. The `internal/ring` rewrite also fixes a latent bug present in the original `lru`/`fifo`: their eviction path deleted a cache entry keyed by a preallocated-but-never-used node's zero value, which could silently drop an unrelated real entry whose key equalled that zero value (e.g. key `0` for `int` keys). `internal/ring` only clears an index entry for a slot that was actually occupied.
+
+## Correctness
+
+`internal/ring/ring_fuzz_test.go` and `2q_fuzz_test.go` differentially fuzz-test `Ring` and `TwoQueue` against independent, purpose-built reference models (plain slices, no shared code with the real implementation), plus self-consistency checks on the ring's linked list, to guard against the class of bug a hand-rolled ring buffer can introduce: silent data loss or aliasing on wraparound. These run as regular tests in CI on every push, and a [scheduled workflow](.github/workflows/fuzz.yml) additionally fuzzes both targets for 5 minutes daily with a corpus that persists across runs.
 
