@@ -169,6 +169,18 @@ func (r *Ring[K, V]) Remove(i int32) {
 	r.MoveToBack(i)
 }
 
+// AppendKeys appends the keys of every occupied slot to dst, walking
+// from the front (most recently used/inserted) to the back, and returns
+// the extended slice.
+func (r *Ring[K, V]) AppendKeys(dst []K) []K {
+	for i := r.nodes[r.root].next; i != r.root; i = r.nodes[i].next {
+		if r.nodes[i].value != nil {
+			dst = append(dst, r.nodes[i].key)
+		}
+	}
+	return dst
+}
+
 // Len returns the number of slots currently associated with a key.
 func (r *Ring[K, V]) Len() int {
 	return len(r.index)

@@ -3,6 +3,7 @@ package twoqueue
 import (
 	"fmt"
 	"math/rand"
+	"slices"
 	"testing"
 )
 
@@ -184,6 +185,26 @@ func (o *oracle2Q) set(key, val int) (evK, evV int, evicted bool) {
 
 func (o *oracle2Q) length() int { return o.recent.length() + o.frequent.length() }
 
+func (o *oracle2Q) contains(key int) bool {
+	_, ok := o.frequent.peek(key)
+	if !ok {
+		_, ok = o.recent.get(key)
+	}
+	return ok
+}
+
+// keys mirrors TwoQueue.Keys: frequent MRU->LRU, then recent newest->oldest.
+func (o *oracle2Q) keys() []int {
+	var ks []int
+	for _, e := range o.frequent.list {
+		ks = append(ks, e.key)
+	}
+	for _, e := range o.recent.list {
+		ks = append(ks, e.key)
+	}
+	return ks
+}
+
 func (o *oracle2Q) purge() {
 	o.recent.list, o.recentEvict.list, o.frequent.list = nil, nil, nil
 }
@@ -199,7 +220,7 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 	ora := newOracle2Q(kin, kout, size)
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 5
+		op := ops[i] % 7
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
@@ -243,6 +264,14 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 		case 4: // Purge
 			tq.Purge()
 			ora.purge()
+		case 5: // Contains
+			if got, want := tq.Contains(key), ora.contains(key); got != want {
+				t.Fatalf("kin=%d kout=%d size=%d Contains(%d) mismatch: real=%v oracle=%v", kin, kout, size, key, got, want)
+			}
+		case 6: // Keys
+			if got, want := tq.Keys(), ora.keys(); !slices.Equal(got, want) {
+				t.Fatalf("kin=%d kout=%d size=%d Keys mismatch: real=%v oracle=%v", kin, kout, size, got, want)
+			}
 		}
 
 		if tq.Len() != ora.length() {

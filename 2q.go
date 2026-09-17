@@ -121,6 +121,28 @@ func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	return nil
 }
 
+// Contains reports whether key is cached, without modifying its recency.
+// Keys that are only remembered in the ghost queue are not cached.
+func (L *TwoQueue[K, V]) Contains(key K) bool {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
+	return L.frequent.Contains(key) || L.recent.Contains(key)
+}
+
+// Keys returns a snapshot of the cached keys: the frequent queue from
+// most to least recently used, followed by the recent queue from newest
+// to oldest. It does not modify recency. The slice is freshly allocated
+// and may be modified by the caller.
+func (L *TwoQueue[K, V]) Keys() []K {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
+	keys := make([]K, 0, L.frequent.Len()+L.recent.Len())
+	keys = L.frequent.AppendKeys(keys)
+	return L.recent.AppendKeys(keys)
+}
+
 // Purge removes every entry from the cache, including the ghost keys
 // that track recent evictions, so the cache behaves as freshly created.
 // Capacity is unchanged and the preallocated storage is kept.

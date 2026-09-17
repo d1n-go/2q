@@ -104,6 +104,10 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 						_ = l.Len()
 					case 5:
 						l.Purge()
+					case 6:
+						l.Contains(key)
+					case 7:
+						_ = l.Keys()
 					default:
 						l.Get(key)
 					}

@@ -56,6 +56,17 @@ func (L *LRU[K, V]) Purge() {
 	L.r.Reset()
 }
 
+// Contains reports whether key is cached, without modifying its recency.
+func (L *LRU[K, V]) Contains(key K) bool {
+	_, ok := L.r.Find(key)
+	return ok
+}
+
+// AppendKeys appends the cached keys to dst, most to least recently used, and returns the extended slice.
+func (L *LRU[K, V]) AppendKeys(dst []K) []K {
+	return L.r.AppendKeys(dst)
+}
+
 // Len returns number of cached items.
 func (L *LRU[K, V]) Len() int {
 	return L.r.Len()
