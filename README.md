@@ -36,6 +36,23 @@ upstream packages against a slot-level model of their shared storage and
 checks that this is the *only* behavioral difference; it is a separate module
 so the root stays dependency-free.
 
+### Relation to the paper
+
+`2q_paper_test.go` carries a line-by-line transcription of the "2Q Full
+Version" pseudocode from the [paper](http://www.vldb.org/conf/1994/P439.PDF)
+and replays access traces against it. The queues and transitions are the
+paper's, with one structural difference inherited from upstream: in the paper
+A1in and Am draw from **one shared pool** of slots and `Kin` is a threshold on
+|A1in|, so nothing is evicted while the pool has free slots and |A1in| drifts
+between `Kin` and `Kin+1` in steady state. Here A1in and Am are **separate
+fixed-size queues** — A1in pages out its tail as soon as it holds `Kin`
+entries, even if Am is empty, and Am's size never changes. The simulator has a
+switch for the pool policy: the cache matches it exactly under the
+fixed-partition policy (fuzzed), and a test pins the first point of divergence
+from the paper's policy (the `Kin+1`-th insertion into a fresh cache). On an
+80/20 trace the measured hit-rate cost of the fixed partition is under half a
+percentage point; `go test -run HitRate -v` prints the numbers.
+
 ## Example
 
 ```go

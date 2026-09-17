@@ -21,6 +21,8 @@ jobs:
           - pkg: .
             func: FuzzTwoQueueAgainstOracle
           - pkg: .
+            func: FuzzTwoQueueAgainstPaperSimulator
+          - pkg: .
             dir: compat
             func: FuzzForkAndUpstreamAgainstSlotModel
     steps:
