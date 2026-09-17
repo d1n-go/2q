@@ -76,7 +76,15 @@ func main() {
 
 ## TTL
 
-You can wrap values into an `Expiring[T any]` struct to release memory on a timer (or manually, in a `Valid` method).
+The cache has no built-in expiry. You can wrap values into an `Expiring[T]`
+that releases its payload on a timer; `Valid` then returns `nil` once the TTL
+has passed. The cache entry itself stays until it is evicted normally — only
+the memory behind it is freed. This trades one `time.AfterFunc` timer per
+entry for eager release; if you only need lazy expiry, storing a deadline next
+to the value and comparing it in `Valid` is cheaper.
+
+The example below is compiled and race-tested in
+[`example_ttl_test.go`](example_ttl_test.go).
 
 <details>
     <summary>Example implementation</summary>
@@ -84,30 +92,36 @@ You can wrap values into an `Expiring[T any]` struct to release memory on a time
 ```go
 import (
     "fmt"
+    "sync/atomic"
     "time"
 
     twoqueue "github.com/d1n-go/2q"
 )
 
+// Expiring wraps a value that releases itself after a TTL. The pointer
+// is held in a shared atomic box, so every copy of an Expiring (the one
+// stored in the cache, the one the timer closure captured) sees the same
+// state, and the timer goroutine can clear it while readers Load it
+// without a data race.
 type Expiring[T any] struct {
-    value *T
+    value *atomic.Pointer[T]
 }
 
-func (E *Expiring[T]) Valid() *T {
-    if E == nil {
+// Valid returns the value, or nil once the TTL has passed. It is nil-safe
+// so it can be chained directly onto a cache Get.
+func (e *Expiring[T]) Valid() *T {
+    if e == nil {
         return nil
     }
-
-    return E.value
+    return e.value.Load()
 }
 
 func WithTTL[T any](value T, ttl time.Duration) Expiring[T] {
-    e := Expiring[T]{
-        value: &value,
-    }
+    e := Expiring[T]{value: new(atomic.Pointer[T])}
+    e.value.Store(&value)
 
     time.AfterFunc(ttl, func() {
-        e.value = nil // Release memory
+        e.value.Store(nil) // Release memory; the cache entry itself stays until evicted.
     })
 
     return e
@@ -118,13 +132,13 @@ func main() {
 
     cache.Set("Hello", WithTTL("Bye", time.Hour))
 
-    if e := cache.Get("Hello").Valid(); e != nil {
-        fmt.Println(*e)
+    if v := cache.Get("Hello").Valid(); v != nil {
+        fmt.Println(*v)
+        // Output: Bye
     }
 }
 ```
 
-**Note:** although this short implementation frees memory after the TTL duration, it does not erase the entry for the key in the cache. It can be a problem if you do not check nilness after getting an element from the cache and call `Set` afterwards.
 </details>
 
 ## Benchmarks
