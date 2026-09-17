@@ -39,6 +39,18 @@ const (
 // other reader of the same entry and is not synchronized by the cache
 // lock; treat the pointee as read-only, or copy it, unless V itself is
 // safe for concurrent mutation.
+//
+// A TwoQueue must be created with New or NewParams; the zero value is
+// not usable and its methods will panic with a nil dereference.
+//
+// Keys are stored in a Go map, so K must be comparable at run time as
+// well as at compile time. With an interface key type such as any, a
+// key whose dynamic type is not comparable (a slice, map or func) makes
+// the operation panic with "hash of unhashable type", exactly as a map
+// access would. Floating-point NaN keys are comparable but never equal
+// to themselves: a NaN entry can never be found again, and since a map
+// entry keyed by NaN cannot be deleted, every Set of a NaN key leaks an
+// index entry and inflates Len. Do not use NaN as a key.
 type TwoQueue[K comparable, V any] struct {
 	mu          sync.Mutex
 	recent      *fifo.FIFO[K, V]        // A1in in paper
@@ -167,8 +179,16 @@ const MaxSize = ring.MaxSize
 // the Set that inserts it and only lands in the cache on the second Set
 // (via the ghost queue, if Kout > 0); with size == 0 nothing can be
 // held in frequent, so a Set that would promote a key instead reports it
-// as evicted immediately and the key is not stored at all. NewParams
-// panics if any capacity exceeds MaxSize.
+// as evicted immediately and the key is not stored at all.
+//
+// NewParams panics if any capacity exceeds MaxSize. That is the only
+// panic this package raises itself: it signals a programmer error in a
+// constant argument, in the spirit of make with a negative length, and
+// can never be a run-time condition of a correct program. The cache's
+// operations do not panic on a cache built here, whatever the sequence
+// of calls; the remaining ways to crash (unhashable interface keys, or a
+// capacity whose preallocation exhausts memory) come from the runtime
+// and are documented on TwoQueue.
 func NewParams[K comparable, V any](Kin int, Kout int, size int) *TwoQueue[K, V] {
 	return &TwoQueue[K, V]{
 		recent:      fifo.New[K, V](clampSize(Kin)),
