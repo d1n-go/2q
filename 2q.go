@@ -56,6 +56,23 @@ type TwoQueue[K comparable, V any] struct {
 	recent      *fifo.FIFO[K, V]        // A1in in paper
 	recentEvict *fifo.FIFO[K, struct{}] // A1out in paper
 	frequent    *lru.LRU[K, V]          // Am in paper
+	stats       Stats
+}
+
+// Stats holds the cache's hit/miss counters. Only Get is counted: Peek,
+// Contains and Set are not lookups on behalf of a consumer, and a Get on
+// a key that is only remembered in the ghost queue is a miss.
+type Stats struct {
+	Hits   uint64
+	Misses uint64
+}
+
+// HitRate returns Hits / (Hits + Misses), or 0 if nothing was looked up.
+func (s Stats) HitRate() float64 {
+	if total := s.Hits + s.Misses; total > 0 {
+		return float64(s.Hits) / float64(total)
+	}
+	return 0
 }
 
 // Evicted holds key/value pair that was evicted from cache.
@@ -92,11 +109,17 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	if e := L.frequent.Get(key); e != nil {
-		return e
+	e := L.frequent.Get(key)
+	if e == nil {
+		e = L.recent.Get(key)
 	}
 
-	return L.recent.Get(key)
+	if e != nil {
+		L.stats.Hits++
+	} else {
+		L.stats.Misses++
+	}
+	return e
 }
 
 // Set stores key/value pair in 2Q cache following 2Q Full Version promotion algorytm.
@@ -141,6 +164,26 @@ func (L *TwoQueue[K, V]) Keys() []K {
 	keys := make([]K, 0, L.frequent.Len()+L.recent.Len())
 	keys = L.frequent.AppendKeys(keys)
 	return L.recent.AppendKeys(keys)
+}
+
+// Stats returns a snapshot of the hit/miss counters. They accumulate
+// for the lifetime of the cache; Purge does not reset them, ResetStats
+// does.
+func (L *TwoQueue[K, V]) Stats() Stats {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
+	return L.stats
+}
+
+// ResetStats zeroes the hit/miss counters and returns their last values.
+func (L *TwoQueue[K, V]) ResetStats() Stats {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
+	s := L.stats
+	L.stats = Stats{}
+	return s
 }
 
 // Purge removes every entry from the cache, including the ghost keys

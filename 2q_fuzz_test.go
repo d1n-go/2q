@@ -218,9 +218,10 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 	const keyDomain = 6
 	tq := NewParams[int, int](kin, kout, size)
 	ora := newOracle2Q(kin, kout, size)
+	var want Stats
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 7
+		op := ops[i] % 8
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
@@ -234,6 +235,11 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			mv, mok := ora.get(key)
 			if (gp != nil) != mok || (mok && gv != mv) {
 				t.Fatalf("kin=%d kout=%d size=%d Get(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
+			}
+			if mok {
+				want.Hits++
+			} else {
+				want.Misses++
 			}
 		case 1: // Set
 			e := tq.Set(key, val)
@@ -272,6 +278,15 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			if got, want := tq.Keys(), ora.keys(); !slices.Equal(got, want) {
 				t.Fatalf("kin=%d kout=%d size=%d Keys mismatch: real=%v oracle=%v", kin, kout, size, got, want)
 			}
+		case 7: // ResetStats
+			if got := tq.ResetStats(); got != want {
+				t.Fatalf("kin=%d kout=%d size=%d ResetStats returned %+v, want %+v", kin, kout, size, got, want)
+			}
+			want = Stats{}
+		}
+
+		if got := tq.Stats(); got != want {
+			t.Fatalf("kin=%d kout=%d size=%d Stats after op %d on key %d: %+v, want %+v", kin, kout, size, op, key, got, want)
 		}
 
 		if tq.Len() != ora.length() {
