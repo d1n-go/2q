@@ -121,6 +121,18 @@ func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	return nil
 }
 
+// Purge removes every entry from the cache, including the ghost keys
+// that track recent evictions, so the cache behaves as freshly created.
+// Capacity is unchanged and the preallocated storage is kept.
+func (L *TwoQueue[K, V]) Purge() {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
+	L.frequent.Purge()
+	L.recentEvict.Purge()
+	L.recent.Purge()
+}
+
 // Len returns size of cache (frequent + recent items)
 func (L *TwoQueue[K, V]) Len() int {
 	L.mu.Lock()

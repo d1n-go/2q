@@ -91,7 +91,7 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 				r := rand.New(rand.NewSource(seed))
 				for i := 0; i < opsPerG; i++ {
 					key := r.Intn(keyDomain)
-					switch r.Intn(5) {
+					switch r.Intn(64) {
 					case 0:
 						l.Get(key)
 					case 1:
@@ -102,6 +102,10 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 						l.Remove(key)
 					case 4:
 						_ = l.Len()
+					case 5:
+						l.Purge()
+					default:
+						l.Get(key)
 					}
 				}
 			}(int64(g + 1))

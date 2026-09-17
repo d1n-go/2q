@@ -49,6 +49,11 @@ func (L *FIFO[K, V]) Push(key K, value V) *Evicted[K, V] {
 	return nil
 }
 
+// Purge removes every entry. Capacity is unchanged.
+func (L *FIFO[K, V]) Purge() {
+	L.r.Reset()
+}
+
 // Len returns number of cached items.
 func (L *FIFO[K, V]) Len() int {
 	return L.r.Len()

@@ -184,6 +184,10 @@ func (o *oracle2Q) set(key, val int) (evK, evV int, evicted bool) {
 
 func (o *oracle2Q) length() int { return o.recent.length() + o.frequent.length() }
 
+func (o *oracle2Q) purge() {
+	o.recent.list, o.recentEvict.list, o.frequent.list = nil, nil, nil
+}
+
 // runTwoQueueSequence replays ops (pairs of opcode/key bytes) against the
 // real TwoQueue and the independent oracle in lockstep, failing on the
 // first divergence in returned values, evicted entries, or Len().
@@ -195,7 +199,7 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 	ora := newOracle2Q(kin, kout, size)
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 4
+		op := ops[i] % 5
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
@@ -236,6 +240,9 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			if (gp != nil) != mok || (mok && gv != mv) {
 				t.Fatalf("kin=%d kout=%d size=%d Remove(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
 			}
+		case 4: // Purge
+			tq.Purge()
+			ora.purge()
 		}
 
 		if tq.Len() != ora.length() {

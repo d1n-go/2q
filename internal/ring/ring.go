@@ -44,28 +44,38 @@ func New[K comparable, V any](size int) *Ring[K, V] {
 		index: make(map[K]int32, size),
 		root:  int32(size),
 	}
+	r.Reset()
 
+	return r
+}
+
+// Reset empties the ring: every slot is zeroed (dropping the keys and
+// values it held) and relinked in index order behind the sentinel, and
+// the index is cleared. Capacity is unchanged.
+func (r *Ring[K, V]) Reset() {
+	clear(r.nodes)
+	clear(r.index)
+
+	size := r.root
 	if size == 0 {
 		r.nodes[r.root].prev = r.root
 		r.nodes[r.root].next = r.root
-		return r
+		return
 	}
 
-	for i := int32(0); i < int32(size); i++ {
+	for i := int32(0); i < size; i++ {
 		prev, next := i-1, i+1
 		if i == 0 {
 			prev = r.root
 		}
-		if int(i) == size-1 {
+		if i == size-1 {
 			next = r.root
 		}
 		r.nodes[i].prev = prev
 		r.nodes[i].next = next
 	}
 	r.nodes[r.root].next = 0
-	r.nodes[r.root].prev = int32(size) - 1
-
-	return r
+	r.nodes[r.root].prev = size - 1
 }
 
 // Find returns the slot index holding key, if any.

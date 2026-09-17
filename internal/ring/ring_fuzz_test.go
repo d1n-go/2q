@@ -129,6 +129,8 @@ func (l *ringLRU) victim() (int, bool) {
 
 func (l *ringLRU) length() int { return l.r.Len() }
 
+func (l *ringLRU) purge() { l.r.Reset() }
+
 // lruModel is an independent reference LRU built on plain slice shifting
 // (no fixed slots, no linked list, no reused storage). It shares the
 // documented contract with ringLRU but not the implementation strategy, so
@@ -207,6 +209,8 @@ func (m *lruModel) victim() (int, bool) {
 
 func (m *lruModel) length() int { return len(m.list) }
 
+func (m *lruModel) purge() { m.list = nil }
+
 // runSequence replays ops (pairs of opcode/key bytes) against a ring-backed
 // LRU and the independent model in lockstep, failing on the first
 // divergence, and re-validates the ring's internal invariants after every
@@ -219,7 +223,7 @@ func runSequence(t *testing.T, capacity int, ops []byte) {
 	model := &lruModel{cap: capacity}
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 5
+		op := ops[i] % 6
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
@@ -254,6 +258,9 @@ func runSequence(t *testing.T, capacity int, ops []byte) {
 			if gok != mok || (gok && gv != mv) {
 				t.Fatalf("cap=%d Victim mismatch: ring=(%d,%v) model=(%d,%v)", capacity, gv, gok, mv, mok)
 			}
+		case 5:
+			rl.purge()
+			model.purge()
 		}
 
 		if rl.length() != model.length() {

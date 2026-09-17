@@ -51,6 +51,11 @@ func (L *LRU[K, V]) Set(key K, value V) *Evicted[K, V] {
 	return nil
 }
 
+// Purge removes every entry. Capacity is unchanged.
+func (L *LRU[K, V]) Purge() {
+	L.r.Reset()
+}
+
 // Len returns number of cached items.
 func (L *LRU[K, V]) Len() int {
 	return L.r.Len()
