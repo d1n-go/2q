@@ -1,15 +1,14 @@
 // Package lru implements cache with least recent used eviction policy.
+//
+// LRU is not safe for concurrent use on its own: it is only ever driven
+// from under the TwoQueue lock, which must cover a whole 2Q operation
+// spanning several queues, so a second lock here would be pure overhead.
 package lru
 
-import (
-	"sync"
+import "github.com/d1n-go/2q/internal/ring"
 
-	"github.com/d1n-go/2q/internal/ring"
-)
-
-// LRU implements a thread-safe cache with least recent used eviction policy.
+// LRU implements a cache with least recent used eviction policy.
 type LRU[K comparable, V any] struct {
-	m    sync.Mutex
 	r    *ring.Ring[K, V]
 	size int
 }
@@ -22,9 +21,6 @@ type Evicted[K comparable, V any] struct {
 
 // Get returns pointer to value for key, if value was in cache (nil returned otherwise).
 func (L *LRU[K, V]) Get(key K) *V {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	if i, ok := L.r.Find(key); ok {
 		L.r.MoveToFront(i)
 		return L.r.Value(i)
@@ -39,9 +35,6 @@ func (L *LRU[K, V]) Set(key K, value V) *Evicted[K, V] {
 	if L.size < 1 {
 		return &Evicted[K, V]{key, value}
 	}
-
-	L.m.Lock()
-	defer L.m.Unlock()
 
 	if i, ok := L.r.Find(key); ok {
 		previousValue := L.r.Value(i)
@@ -60,17 +53,11 @@ func (L *LRU[K, V]) Set(key K, value V) *Evicted[K, V] {
 
 // Len returns number of cached items.
 func (L *LRU[K, V]) Len() int {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	return L.r.Len()
 }
 
 // Remove method removes entry associated with key and returns pointer to removed value (or nil if entry was not in cache).
 func (L *LRU[K, V]) Remove(key K) *V {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	if i, ok := L.r.Find(key); ok {
 		value := L.r.Value(i)
 		L.r.MoveToBack(i)
@@ -84,9 +71,6 @@ func (L *LRU[K, V]) Remove(key K) *V {
 
 // Peek returns value for key (if key was in cache), but does not modify its recency.
 func (L *LRU[K, V]) Peek(key K) *V {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	if i, ok := L.r.Find(key); ok {
 		return L.r.Value(i)
 	}
@@ -100,9 +84,6 @@ func (L *LRU[K, V]) Victim() *K {
 	if L.size < 1 {
 		return nil
 	}
-
-	L.m.Lock()
-	defer L.m.Unlock()
 
 	i := L.r.Back()
 	if v := L.r.Value(i); v != nil {

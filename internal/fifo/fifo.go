@@ -1,15 +1,14 @@
-// Package fifo implements a thread-safe fixed size FIFO with O(1) Get.
+// Package fifo implements a fixed size FIFO with O(1) Get.
+//
+// FIFO is not safe for concurrent use on its own: it is only ever driven
+// from under the TwoQueue lock, which must cover a whole 2Q operation
+// spanning several queues, so a second lock here would be pure overhead.
 package fifo
 
-import (
-	"sync"
+import "github.com/d1n-go/2q/internal/ring"
 
-	"github.com/d1n-go/2q/internal/ring"
-)
-
-// FIFO implements a thread-safe fixed size FIFO with O(1) Get.
+// FIFO implements a fixed size FIFO with O(1) Get.
 type FIFO[K comparable, V any] struct {
-	m    sync.Mutex
 	r    *ring.Ring[K, V]
 	size int
 }
@@ -23,9 +22,6 @@ type Evicted[K comparable, V any] struct {
 // Get returns pointer to value for key, if value was in cache (nil returned otherwise).
 // Unlike LRU, Get does not affect the eviction order.
 func (L *FIFO[K, V]) Get(key K) *V {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	if i, ok := L.r.Find(key); ok {
 		return L.r.Value(i)
 	}
@@ -39,9 +35,6 @@ func (L *FIFO[K, V]) Push(key K, value V) *Evicted[K, V] {
 	if L.size < 1 {
 		return &Evicted[K, V]{key, value}
 	}
-
-	L.m.Lock()
-	defer L.m.Unlock()
 
 	if i, ok := L.r.Find(key); ok {
 		L.r.SetValue(i, &value)
@@ -58,17 +51,11 @@ func (L *FIFO[K, V]) Push(key K, value V) *Evicted[K, V] {
 
 // Len returns number of cached items.
 func (L *FIFO[K, V]) Len() int {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	return L.r.Len()
 }
 
 // Remove method removes entry associated with key and returns pointer to removed value (or nil if entry was not in cache).
 func (L *FIFO[K, V]) Remove(key K) *V {
-	L.m.Lock()
-	defer L.m.Unlock()
-
 	if i, ok := L.r.Find(key); ok {
 		value := L.r.Value(i)
 		L.r.MoveToBack(i)
@@ -86,9 +73,6 @@ func (L *FIFO[K, V]) Victim() *K {
 	if L.size < 1 {
 		return nil
 	}
-
-	L.m.Lock()
-	defer L.m.Unlock()
 
 	i := L.r.Back()
 	if v := L.r.Value(i); v != nil {

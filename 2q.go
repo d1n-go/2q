@@ -1,6 +1,8 @@
 package twoqueue
 
 import (
+	"sync"
+
 	"github.com/d1n-go/2q/internal/fifo"
 	"github.com/d1n-go/2q/internal/lru"
 )
@@ -23,7 +25,14 @@ const (
 // additional tracking overhead to the standard LRU cache, and is
 // computationally about 2x the cost, and adds some metadata over
 // head.
+//
+// All methods take a single cache-wide lock: every operation touches up
+// to three internal queues, and the promotion logic in Set is a
+// check-then-act across them, so per-queue locking alone would let two
+// concurrent writers of the same key leave a copy of it in both recent
+// and frequent.
 type TwoQueue[K comparable, V any] struct {
+	mu          sync.Mutex
 	recent      *fifo.FIFO[K, V]        // A1in in paper
 	recentEvict *fifo.FIFO[K, struct{}] // A1out in paper
 	frequent    *lru.LRU[K, V]          // Am in paper
@@ -59,6 +68,9 @@ func fromFifoEvicted[K comparable, V any](e *fifo.Evicted[K, V]) *Evicted[K, V] 
 
 // Get probes frequent and recent cached items and returns pointer to value (or nil if it was not found).
 func (L *TwoQueue[K, V]) Get(key K) *V {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
 	if e := L.frequent.Get(key); e != nil {
 		return e
 	}
@@ -68,6 +80,9 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 
 // Set stores key/value pair in 2Q cache following 2Q Full Version promotion algorytm.
 func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
 	if e := L.frequent.Peek(key); e != nil {
 		return fromLruEvicted(L.frequent.Set(key, value))
 	}
@@ -87,11 +102,17 @@ func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 
 // Len returns size of cache (frequent + recent items)
 func (L *TwoQueue[K, V]) Len() int {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
 	return L.frequent.Len() + L.recent.Len()
 }
 
 // Peek returns value for key (if key was in cache), but does not modify its recency.
 func (L *TwoQueue[K, V]) Peek(key K) *V {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
 	if e := L.frequent.Peek(key); e != nil {
 		return e
 	}
@@ -101,6 +122,9 @@ func (L *TwoQueue[K, V]) Peek(key K) *V {
 
 // Remove method removes entry associated with key and returns pointer to removed value (or nil if entry was not in cache).
 func (L *TwoQueue[K, V]) Remove(key K) *V {
+	L.mu.Lock()
+	defer L.mu.Unlock()
+
 	if e := L.frequent.Remove(key); e != nil {
 		return e
 	}
