@@ -1,10 +1,12 @@
 package twoqueue
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/d1n-go/2q/internal/fifo"
 	"github.com/d1n-go/2q/internal/lru"
+	"github.com/d1n-go/2q/internal/ring"
 )
 
 const (
@@ -31,6 +33,12 @@ const (
 // check-then-act across them, so per-queue locking alone would let two
 // concurrent writers of the same key leave a copy of it in both recent
 // and frequent.
+//
+// Get, Peek and Remove return a pointer to the value stored in the cache
+// rather than a copy. Writing through that pointer is visible to every
+// other reader of the same entry and is not synchronized by the cache
+// lock; treat the pointee as read-only, or copy it, unless V itself is
+// safe for concurrent mutation.
 type TwoQueue[K comparable, V any] struct {
 	mu          sync.Mutex
 	recent      *fifo.FIFO[K, V]        // A1in in paper
@@ -67,6 +75,7 @@ func fromFifoEvicted[K comparable, V any](e *fifo.Evicted[K, V]) *Evicted[K, V] 
 }
 
 // Get probes frequent and recent cached items and returns pointer to value (or nil if it was not found).
+// A hit in the frequent queue marks the entry as most recently used.
 func (L *TwoQueue[K, V]) Get(key K) *V {
 	L.mu.Lock()
 	defer L.mu.Unlock()
@@ -132,7 +141,11 @@ func (L *TwoQueue[K, V]) Remove(key K) *V {
 	return L.recent.Remove(key)
 }
 
-// New creates 2Q cache with specified capacities:
+// MaxSize is the largest capacity accepted for any single queue by
+// NewParams (and therefore the largest size accepted by New).
+const MaxSize = ring.MaxSize
+
+// NewParams creates 2Q cache with specified capacities:
 //
 // - Kin defines A1in FIFO size for key/value pairs
 // - Kout defines A1out FIFO size for keys
@@ -148,15 +161,38 @@ func (L *TwoQueue[K, V]) Remove(key K) *V {
 // - And size should take the rest 7500 items.
 //
 // Cache will preallocate size count of internal structures to avoid allocation in process.
+//
+// A negative capacity is treated as zero. A zero-capacity queue never
+// holds anything: with Kin == 0 every new key is reported as evicted by
+// the Set that inserts it and only lands in the cache on the second Set
+// (via the ghost queue, if Kout > 0); with size == 0 nothing can be
+// held in frequent, so a Set that would promote a key instead reports it
+// as evicted immediately and the key is not stored at all. NewParams
+// panics if any capacity exceeds MaxSize.
 func NewParams[K comparable, V any](Kin int, Kout int, size int) *TwoQueue[K, V] {
 	return &TwoQueue[K, V]{
-		recent:      fifo.New[K, V](Kin),
-		recentEvict: fifo.New[K, struct{}](Kout),
-		frequent:    lru.New[K, V](size),
+		recent:      fifo.New[K, V](clampSize(Kin)),
+		recentEvict: fifo.New[K, struct{}](clampSize(Kout)),
+		frequent:    lru.New[K, V](clampSize(size)),
 	}
 }
 
+func clampSize(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > MaxSize {
+		panic(fmt.Sprintf("twoqueue: capacity %d exceeds MaxSize (%d)", n, MaxSize))
+	}
+	return n
+}
+
 // New creates 2Q cache with predefined size splits. 25% of size goes to Kin, 50% to KOut and rest to Am size.
+//
+// The splits are truncated, so sizes below 4 leave Kin at zero and the
+// cache only stores keys that are Set at least twice (see NewParams);
+// size 1 yields a cache that never stores anything. Sizes of a few
+// hundred and up are the intended use.
 func New[K comparable, V any](size int) *TwoQueue[K, V] {
 	return NewParams[K, V](
 		int(Default2QRecentRatio*float64(size)),

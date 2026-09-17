@@ -6,6 +6,15 @@
 // plain slice indices instead of pointers.
 package ring
 
+import (
+	"fmt"
+	"math"
+)
+
+// MaxSize is the largest ring New accepts: slots, and the sentinel that
+// sits at index size, are addressed by int32.
+const MaxSize = math.MaxInt32
+
 type node[K comparable, V any] struct {
 	key        K
 	value      *V
@@ -22,8 +31,14 @@ type Ring[K comparable, V any] struct {
 	root  int32
 }
 
-// New creates a Ring with size preallocated, empty slots.
+// New creates a Ring with size preallocated, empty slots. It panics if
+// size is negative or exceeds MaxSize; callers with a looser contract
+// (the public constructors clamp negatives to zero) must normalize first.
 func New[K comparable, V any](size int) *Ring[K, V] {
+	if size < 0 || size > MaxSize {
+		panic(fmt.Sprintf("ring: size %d out of range [0, %d]", size, MaxSize))
+	}
+
 	r := &Ring[K, V]{
 		nodes: make([]node[K, V], size+1),
 		index: make(map[K]int32, size),
@@ -132,9 +147,16 @@ func (r *Ring[K, V]) Evict(i int32, key K, value *V) (evictedKey K, evictedValue
 	return evictedKey, evictedValue
 }
 
-// DeleteIndex removes key from the index without touching any slot.
-func (r *Ring[K, V]) DeleteIndex(key K) {
-	delete(r.index, key)
+// Remove empties slot i, unlinks its key from the index and moves the
+// slot to the back so it is the next one reused. The key is zeroed as
+// well so that a removed entry does not keep its key (and whatever that
+// key references) alive until the slot is recycled.
+func (r *Ring[K, V]) Remove(i int32) {
+	delete(r.index, r.nodes[i].key)
+	var zero K
+	r.nodes[i].key = zero
+	r.nodes[i].value = nil
+	r.MoveToBack(i)
 }
 
 // Len returns the number of slots currently associated with a key.

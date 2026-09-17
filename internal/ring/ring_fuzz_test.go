@@ -110,9 +110,7 @@ func (l *ringLRU) set(key, val int) (evK, evV int, evicted bool) {
 func (l *ringLRU) remove(key int) (int, bool) {
 	if i, ok := l.r.Find(key); ok {
 		v := l.r.Value(i)
-		l.r.MoveToBack(i)
-		l.r.SetValue(i, nil)
-		l.r.DeleteIndex(key)
+		l.r.Remove(i)
 		return *v, true
 	}
 	return 0, false

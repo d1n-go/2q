@@ -60,9 +60,7 @@ func (L *LRU[K, V]) Len() int {
 func (L *LRU[K, V]) Remove(key K) *V {
 	if i, ok := L.r.Find(key); ok {
 		value := L.r.Value(i)
-		L.r.MoveToBack(i)
-		L.r.SetValue(i, nil)
-		L.r.DeleteIndex(key)
+		L.r.Remove(i)
 		return value
 	}
 

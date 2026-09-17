@@ -1,6 +1,9 @@
 package ring
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestRing_zero(t *testing.T) {
 	r := New[int, int](0)
@@ -90,25 +93,49 @@ func TestRing_moveToFrontAndBack(t *testing.T) {
 	}
 }
 
-func TestRing_deleteIndex(t *testing.T) {
-	r := New[string, int](1)
+func TestRing_remove(t *testing.T) {
+	r := New[string, int](2)
 
 	v := 5
 	i := r.Back()
 	r.Evict(i, "a", &v)
-
-	if r.Len() != 1 {
-		t.Fatalf("bad len: %v", r.Len())
+	if r.Len() != 1 || r.Back() == i {
+		t.Fatalf("setup: len=%d, slot should be at front", r.Len())
 	}
 
-	r.DeleteIndex("a")
+	r.Remove(i)
 
 	if _, ok := r.Find("a"); ok {
 		t.Fatalf("key should have been removed from index")
 	}
-
 	if r.Len() != 0 {
 		t.Fatalf("bad len: %v", r.Len())
+	}
+	if got := r.Value(i); got != nil {
+		t.Fatalf("value should be cleared, got %v", got)
+	}
+	if got := r.Key(i); got != "" {
+		t.Fatalf("key should be zeroed so it does not outlive the entry, got %q", got)
+	}
+	if r.Back() != i {
+		t.Fatalf("removed slot should be the next eviction victim")
+	}
+}
+
+func TestRing_sizeOutOfRange(t *testing.T) {
+	mustPanic := func(name string, size int) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("%s: New(%d) should panic", name, size)
+			}
+		}()
+		New[int, int](size)
+	}
+
+	mustPanic("negative", -1)
+	if math.MaxInt > MaxSize {
+		mustPanic("too large", MaxSize+1)
 	}
 }
 
