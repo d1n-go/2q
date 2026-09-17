@@ -14,6 +14,28 @@ based linked list was replaced by a slice-backed ring (`internal/ring`) — so
 this module has zero dependencies outside the standard library. Public API is
 unchanged. See [NOTICE.md](NOTICE.md) for attribution.
 
+### Differences from upstream
+
+- **All operations are atomic.** Upstream locked each internal queue
+  separately, so two goroutines writing the same key could leave a copy of it
+  in both the recent and the frequent queue; `Remove` then deleted only one
+  and `Get` resurrected the other. `TwoQueue` now holds a single cache-wide
+  lock.
+- **No lost entries on slot reuse.** Upstream's `lru`/`fifo` evicted a slot by
+  unconditionally deleting the index entry for whatever key that slot last
+  held, even when the slot was empty. If the same key was live in another
+  slot, the live entry silently vanished. This is reachable via `Remove`, via
+  the zero value of `K`, and — through the ghost queue — from a plain
+  `Set`-only workload, where it made upstream "forget" recently evicted keys
+  and skip promotions it should have made. The fork only clears the index
+  for a slot that actually held a value, so eviction decisions can differ
+  from upstream in exactly those situations.
+
+The [`compat`](compat) module runs the fork in lockstep with the archived
+upstream packages against a slot-level model of their shared storage and
+checks that this is the *only* behavioral difference; it is a separate module
+so the root stays dependency-free.
+
 ## Example
 
 ```go

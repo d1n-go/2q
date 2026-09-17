@@ -33,6 +33,12 @@ jobs:
       - name: Test
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      # compat is a separate module (it depends on the archived upstream
+      # packages) so ./... from the root does not reach it.
+      - name: Differential tests against upstream
+        working-directory: compat
+        run: go test -race ./...
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
