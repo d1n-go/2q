@@ -39,7 +39,12 @@ jobs:
         working-directory: compat
         run: go test -race ./...
 
+      # A release tag points at a commit already pushed to main, so this
+      # workflow also runs for the tag ref. Skip the upload then: it's the
+      # same coverage.out for the same commit, and a second session on the
+      # same SHA confuses Codecov's patch-coverage line attribution.
       - name: Upload coverage to Codecov
+        if: github.ref_type != 'tag'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
