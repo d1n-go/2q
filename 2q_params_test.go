@@ -17,13 +17,17 @@ func TestNewParams_NegativeCapacityIsZero(t *testing.T) {
 }
 
 func TestNewParams_CapacityAboveMaxSizePanics(t *testing.T) {
-	if MaxSize+1 < 0 {
+	// Computed at run time: on 32-bit platforms the constant MaxSize+1
+	// does not fit in int and would not even compile.
+	tooLarge := MaxSize
+	tooLarge++
+	if tooLarge < 0 {
 		t.Skip("int cannot exceed MaxSize on this platform")
 	}
 	for name, f := range map[string]func(){
-		"Kin":  func() { NewParams[int, int](MaxSize+1, 0, 0) },
-		"Kout": func() { NewParams[int, int](0, MaxSize+1, 0) },
-		"size": func() { NewParams[int, int](0, 0, MaxSize+1) },
+		"Kin":  func() { NewParams[int, int](tooLarge, 0, 0) },
+		"Kout": func() { NewParams[int, int](0, tooLarge, 0) },
+		"size": func() { NewParams[int, int](0, 0, tooLarge) },
 	} {
 		func() {
 			defer func() {

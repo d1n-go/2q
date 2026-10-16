@@ -39,7 +39,7 @@ func checkInvariants(t *testing.T, r *Ring[int, int]) {
 	}
 
 	live := 0
-	for i := int32(0); i < r.root; i++ {
+	for i := range r.root {
 		node := r.nodes[i]
 		if node.value == nil {
 			continue
@@ -289,7 +289,6 @@ func FuzzRingAgainstModel(f *testing.F) {
 // whatever the native fuzz corpus happens to contain.
 func TestRingProperty(t *testing.T) {
 	for _, capacity := range []int{0, 1, 2, 3, 5, 8, 16} {
-		capacity := capacity
 		t.Run(fmt.Sprintf("cap=%d", capacity), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(capacity)*7919 + 1))
 			ops := make([]byte, 8000)

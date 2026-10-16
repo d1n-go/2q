@@ -11,8 +11,9 @@ Maintained fork of the archived [floatdrop/2q](https://github.com/floatdrop/2q).
 Its former dependencies (`floatdrop/lru`, `floatdrop/fifo`, both also archived)
 have been folded in as internal packages, and their `bahlo/generic-list-go`
 based linked list was replaced by a slice-backed ring (`internal/ring`) — so
-this module has zero dependencies outside the standard library. Public API is
-unchanged. See [NOTICE.md](NOTICE.md) for attribution.
+this module has zero dependencies outside the standard library. The upstream
+API is kept as is and extended (see [API](#api)); see
+[NOTICE.md](NOTICE.md) for attribution.
 
 ### Differences from upstream
 
@@ -30,11 +31,16 @@ unchanged. See [NOTICE.md](NOTICE.md) for attribution.
   and skip promotions it should have made. The fork only clears the index
   for a slot that actually held a value, so eviction decisions can differ
   from upstream in exactly those situations.
+- **`Set` reports every value it replaces.** Upstream returned the previous
+  value when updating a key in the frequent queue, but `nil` when updating a
+  key in the recent queue, silently dropping the old value. The fork returns
+  the previous value in both cases, so a non-nil result always means "this
+  value is no longer in the cache" (see [API](#api)).
 
 The [`compat`](compat) module runs the fork in lockstep with the archived
 upstream packages against a slot-level model of their shared storage and
-checks that this is the *only* behavioral difference; it is a separate module
-so the root stays dependency-free.
+checks that these two are the *only* behavioral differences; it is a separate
+module so the root stays dependency-free.
 
 ### Relation to the paper
 
@@ -73,6 +79,41 @@ func main() {
 	}
 }
 ```
+
+## API
+
+| Method | |
+|---|---|
+| `New(size)`, `NewParams(Kin, Kout, size)` | Create a cache; `New` splits `size` 25% / 50% / 75% into A1in / A1out (ghost keys) / Am. Capacities above `MaxSize` panic. |
+| `Get(key) *V` | Look up a value; refreshes recency in Am. Counted in `Stats`. |
+| `Peek(key) *V`, `Contains(key) bool` | Look up without touching recency or `Stats`. |
+| `Set(key, value) *Evicted[K, V]` | Store a value; see below for the result. |
+| `Remove(key) *V` | Delete an entry and return its value. |
+| `Len()`, `Keys()` | Number of cached keys; a snapshot of them (Am most to least recently used, then A1in newest to oldest). |
+| `Purge()` | Drop every entry and ghost key, keeping the allocated storage. |
+| `Stats()`, `ResetStats()` | Hit/miss counters of `Get`, with `HitRate()`. |
+
+`Set` returns the key/value pair the cache stopped holding because of that
+call, or `nil`:
+
+- updating a cached key returns the key with its **previous** value (the key
+  stays cached with the new one);
+- storing a key that does not fit returns the **evicted** entry;
+- with a zero-capacity queue the pair just passed in can come back, because
+  it was not stored at all.
+
+A non-nil result is therefore the place to release whatever a value holds
+(close a handle, return a buffer to a pool). The one caveat: re-setting a key
+to the value it already has returns that same, still cached value.
+
+`Get`, `Peek` and `Remove` return pointers. A pointer stays valid after the
+entry is updated or evicted (the cache never writes through it), but writing
+through it yourself is not synchronized by the cache.
+
+Every method takes a single cache-wide mutex, `Get` included, because 2Q
+updates recency on reads. One cache therefore does not scale across cores
+under heavy concurrent access (`go test -run '^$' -bench ParallelGet -cpu
+1,4,8` shows it); shard keys across several caches if that matters.
 
 ## TTL
 
@@ -160,9 +201,16 @@ name        old allocs/op  new allocs/op  delta
 2Q_Freq-8      3.00 ± 0%      3.00 ± 0%    ~ (p=1.000)
 ```
 
-At the public `TwoQueue` API level, performance is on par with the original (one workload slightly faster, one slightly slower, both within single-digit noise), with identical memory/allocation profile. The `internal/ring` rewrite also fixes a latent bug present in the original `lru`/`fifo`: their eviction path deleted a cache entry keyed by a preallocated-but-never-used node's zero value, which could silently drop an unrelated real entry whose key equalled that zero value (e.g. key `0` for `int` keys). `internal/ring` only clears an index entry for a slot that was actually occupied.
+At the public `TwoQueue` API level, performance is on par with the original (one workload slightly faster, one slightly slower, both within single-digit noise), with identical memory/allocation profile. Since then, `Set` also returns the previous value when it updates a key in the recent queue (see [Differences from upstream](#differences-from-upstream)); that allocates an `Evicted` where upstream returned `nil`, which on these workloads adds about 1 B/op and a few percent of time, with allocs/op unchanged. The `internal/ring` rewrite also fixes a latent bug present in the original `lru`/`fifo`: their eviction path deleted a cache entry keyed by a preallocated-but-never-used node's zero value, which could silently drop an unrelated real entry whose key equalled that zero value (e.g. key `0` for `int` keys). `internal/ring` only clears an index entry for a slot that was actually occupied.
 
 ## Correctness
 
-`internal/ring/ring_fuzz_test.go` and `2q_fuzz_test.go` differentially fuzz-test `Ring` and `TwoQueue` against independent, purpose-built reference models (plain slices, no shared code with the real implementation), plus self-consistency checks on the ring's linked list, to guard against the class of bug a hand-rolled ring buffer can introduce: silent data loss or aliasing on wraparound. These run as regular tests in CI on every push, and a [scheduled workflow](.github/workflows/fuzz.yml) additionally fuzzes both targets for 5 minutes daily with a corpus that persists across runs.
+Four differential fuzz targets check the implementation against independent, purpose-built reference models (plain slices, no shared code with the real implementation):
+
+- `internal/ring/ring_fuzz_test.go` — `Ring` against a slice model, plus self-consistency checks on the ring's linked list, to guard against the class of bug a hand-rolled ring buffer can introduce: silent data loss or aliasing on wraparound;
+- `2q_fuzz_test.go` — the whole `TwoQueue` API against a slice-based 2Q oracle;
+- `2q_paper_test.go` — access traces against a transcription of the paper's pseudocode (see [Relation to the paper](#relation-to-the-paper));
+- `compat/upstream_test.go` — the fork and upstream against a slot-level model (see [Differences from upstream](#differences-from-upstream)).
+
+Their seed corpora and fixed-seed property variants run as regular tests in CI on every push (with `-race`, and on a 32-bit `GOARCH=386` build), and a [scheduled workflow](.github/workflows/fuzz.yml) additionally fuzzes all four targets for 5 minutes daily with a corpus that persists across runs.
 

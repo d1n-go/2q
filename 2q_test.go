@@ -9,14 +9,14 @@ func Benchmark2Q_Rand(b *testing.B) {
 	l := New[int64, int64](8196)
 
 	trace := make([]int64, b.N*2)
-	for i := 0; i < b.N*2; i++ {
+	for i := range b.N * 2 {
 		trace[i] = rand.Int63() % 32768
 	}
 
 	b.ResetTimer()
 
 	var hit, miss int
-	for i := 0; i < 2*b.N; i++ {
+	for i := range 2 * b.N {
 		if i%2 == 0 {
 			l.Set(trace[i], trace[i])
 		} else {
@@ -34,7 +34,7 @@ func Benchmark2Q_Freq(b *testing.B) {
 	l := New[int64, int64](8196)
 
 	trace := make([]int64, b.N*2)
-	for i := 0; i < b.N*2; i++ {
+	for i := range b.N * 2 {
 		if i%2 == 0 {
 			trace[i] = rand.Int63() % 16384
 		} else {
@@ -44,11 +44,11 @@ func Benchmark2Q_Freq(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		l.Set(trace[i], trace[i])
 	}
 	var hit, miss int
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if l.Get(trace[i]) == nil {
 			miss++
 		} else {
@@ -58,14 +58,35 @@ func Benchmark2Q_Freq(b *testing.B) {
 	b.Logf("hit: %d miss: %d ratio: %f", hit, miss, float64(hit)/float64(miss))
 }
 
-func Test2Q(t *testing.T) {
-	l := New[int, int](128)
-
-	for i := 0; i < 256; i++ {
+// Benchmark2Q_ParallelGet measures Get under contention. Every operation
+// takes the single cache-wide lock, so throughput does not grow with
+// GOMAXPROCS; compare -cpu 1,4,8 to see the cost.
+func Benchmark2Q_ParallelGet(b *testing.B) {
+	const size = 8192
+	l := New[int, int](size)
+	for i := range size {
+		l.Set(i, i)
 		l.Set(i, i)
 	}
 
-	for i := 0; i < 128; i++ {
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			l.Get(i % size)
+			i++
+		}
+	})
+}
+
+func Test2Q(t *testing.T) {
+	l := New[int, int](128)
+
+	for i := range 256 {
+		l.Set(i, i)
+	}
+
+	for i := range 128 {
 		if e := l.Get(i); e != nil {
 			t.Fatalf("should be evicted")
 		}
@@ -103,7 +124,7 @@ func Test2Q_Add_RecentEvict(t *testing.T) {
 	}
 
 	if n := l.frequent.Len(); n != 0 {
-		t.Fatalf("no elemenets should be in frequent: %d", n)
+		t.Fatalf("no elements should be in frequent: %d", n)
 	}
 
 	// Pull in the recently evicted
@@ -115,7 +136,7 @@ func Test2Q_Add_RecentEvict(t *testing.T) {
 		t.Fatalf("recently evicted should go to frequent")
 	}
 
-	// Local brust to recent should not change frequent
+	// Local burst to recent should not change frequent
 	l.Set(3, 3)
 	l.Set(3, 3)
 	l.Set(3, 3)

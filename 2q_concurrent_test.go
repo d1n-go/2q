@@ -15,7 +15,7 @@ func checkNoDuplicateKeys(t *testing.T, l *TwoQueue[int, int], keyDomain int) {
 	t.Helper()
 
 	present := 0
-	for k := 0; k < keyDomain; k++ {
+	for k := range keyDomain {
 		inRecent := l.recent.Get(k) != nil
 		inFrequent := l.frequent.Peek(k) != nil
 		if inRecent && inFrequent {
@@ -39,13 +39,13 @@ func checkNoDuplicateKeys(t *testing.T, l *TwoQueue[int, int], keyDomain int) {
 func TestTwoQueue_ConcurrentPromotionDoesNotDuplicateKey(t *testing.T) {
 	const rounds = 5000
 
-	for round := 0; round < rounds; round++ {
+	for round := range rounds {
 		l := NewParams[int, int](1, 4, 4)
 		l.Set(7, 1) // -> recent
 		l.Set(8, 1) // recent is full: 7 moves to the ghost queue
 
 		var wg sync.WaitGroup
-		for g := 0; g < 2; g++ {
+		for range 2 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -84,12 +84,12 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 		l := NewParams[int, int](c.kin, c.kout, c.size)
 
 		var wg sync.WaitGroup
-		for g := 0; g < goroutines; g++ {
+		for g := range goroutines {
 			wg.Add(1)
 			go func(seed int64) {
 				defer wg.Done()
 				r := rand.New(rand.NewSource(seed))
-				for i := 0; i < opsPerG; i++ {
+				for i := range opsPerG {
 					key := r.Intn(keyDomain)
 					switch r.Intn(64) {
 					case 0:
@@ -124,7 +124,7 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 
 		// Every remaining entry must still be readable and carry a value
 		// that some Set actually wrote for that key.
-		for k := 0; k < keyDomain; k++ {
+		for k := range keyDomain {
 			if v := l.Peek(k); v != nil && *v/valueStride != k {
 				t.Fatalf("kin=%d kout=%d size=%d: key %d holds foreign value %d", c.kin, c.kout, c.size, k, *v)
 			}

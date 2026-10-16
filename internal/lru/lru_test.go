@@ -9,14 +9,14 @@ func BenchmarkLRU_Rand(b *testing.B) {
 	l := New[int64, int64](8192)
 
 	trace := make([]int64, b.N*2)
-	for i := 0; i < b.N*2; i++ {
+	for i := range b.N * 2 {
 		trace[i] = rand.Int63() % 32768
 	}
 
 	b.ResetTimer()
 
 	var hit, miss int
-	for i := 0; i < 2*b.N; i++ {
+	for i := range 2 * b.N {
 		if i%2 == 0 {
 			l.Set(trace[i], trace[i])
 		} else {
@@ -34,7 +34,7 @@ func BenchmarkLRU_Freq(b *testing.B) {
 	l := New[int64, int64](8192)
 
 	trace := make([]int64, b.N*2)
-	for i := 0; i < b.N*2; i++ {
+	for i := range b.N * 2 {
 		if i%2 == 0 {
 			trace[i] = rand.Int63() % 16384
 		} else {
@@ -44,11 +44,11 @@ func BenchmarkLRU_Freq(b *testing.B) {
 
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		l.Set(trace[i], trace[i])
 	}
 	var hit, miss int
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if l.Get(trace[i]) == nil {
 			miss++
 		} else {
@@ -113,7 +113,7 @@ func TestLRU_eviction(t *testing.T) {
 	l := New[int, int](128)
 
 	evictCounter := 0
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		if l.Set(i, i) != nil {
 			evictCounter++
 		}
@@ -127,7 +127,7 @@ func TestLRU_eviction(t *testing.T) {
 		t.Fatalf("bad evict count: %v", evictCounter)
 	}
 
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		if e := l.Get(i); e != nil {
 			t.Fatalf("should be evicted")
 		}

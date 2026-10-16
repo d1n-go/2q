@@ -63,7 +63,7 @@ func (r *Ring[K, V]) Reset() {
 		return
 	}
 
-	for i := int32(0); i < size; i++ {
+	for i := range size {
 		prev, next := i-1, i+1
 		if i == 0 {
 			prev = r.root

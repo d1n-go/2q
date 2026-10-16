@@ -64,7 +64,7 @@ func TestRing_moveToFrontAndBack(t *testing.T) {
 	r := New[int, int](3)
 
 	slots := make([]int32, 3)
-	for k := 0; k < 3; k++ {
+	for k := range 3 {
 		i := r.Back()
 		v := k
 		r.Evict(i, k, &v)
@@ -134,8 +134,11 @@ func TestRing_sizeOutOfRange(t *testing.T) {
 	}
 
 	mustPanic("negative", -1)
-	if math.MaxInt > MaxSize {
-		mustPanic("too large", MaxSize+1)
+	// Computed at run time: on 32-bit platforms the constant MaxSize+1
+	// does not fit in int and would not even compile.
+	if tooLarge := MaxSize; tooLarge < math.MaxInt {
+		tooLarge++
+		mustPanic("too large", tooLarge)
 	}
 }
 

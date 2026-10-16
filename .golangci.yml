@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  # Defaults (errcheck, govet, ineffassign, staticcheck, unused) plus a few
+  # cheap ones that catch real mistakes or Go 1.22+ leftovers.
+  enable:
+    - copyloopvar
+    - intrange
+    - misspell
+    - nolintlint
+    - unconvert

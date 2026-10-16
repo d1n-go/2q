@@ -172,6 +172,10 @@ func (o *oracle2Q) set(key, val int) (evK, evV int, evicted bool) {
 	if _, ok := o.frequent.peek(key); ok {
 		return o.frequent.set(key, val)
 	}
+	if prev, ok := o.recent.get(key); ok {
+		o.recent.push(key, val) // in-place update, reported like an LRU update
+		return key, prev, true
+	}
 	if _, ok := o.recentEvict.get(key); ok {
 		o.recentEvict.remove(key)
 		return o.frequent.set(key, val)
@@ -317,7 +321,6 @@ func TestTwoQueueProperty(t *testing.T) {
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1},
 		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4},
 	} {
-		c := c
 		t.Run(fmt.Sprintf("kin=%d/kout=%d/size=%d", c.kin, c.kout, c.size), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(c.kin*97 + c.kout*13 + c.size + 1)))
 			ops := make([]byte, 6000)

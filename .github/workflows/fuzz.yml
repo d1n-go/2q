@@ -9,6 +9,9 @@ on:
         description: "Seconds to fuzz each target"
         default: "300"
 
+permissions:
+  contents: read
+
 jobs:
   fuzz:
     runs-on: ubuntu-latest
@@ -26,18 +29,21 @@ jobs:
             dir: compat
             func: FuzzForkAndUpstreamAgainstSlotModel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: stable
+          # Module downloads are not worth caching here; the fuzz corpus is
+          # cached explicitly below.
+          cache: false
 
       # The corpus of "interesting" inputs found by previous runs lives under
       # GOCACHE, not in the repo. Restoring it lets each scheduled run keep
       # exploring from where the last one left off instead of starting cold.
       - name: Restore fuzz corpus cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build/fuzz
           key: fuzz-${{ matrix.func }}-${{ github.run_id }}
@@ -53,7 +59,7 @@ jobs:
       # as a permanent regression seed alongside the fix.
       - name: Upload failing corpus entry
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-failure-${{ strategy.job-index }}
           path: "**/testdata/fuzz/**"

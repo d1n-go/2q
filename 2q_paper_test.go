@@ -219,7 +219,6 @@ func TestTwoQueueAgainstPaperSimulatorProperty(t *testing.T) {
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1}, {0, 2, 2}, {2, 2, 0},
 		{1, 2, 3}, {2, 4, 6}, {4, 4, 4}, {3, 1, 5},
 	} {
-		c := c
 		t.Run(fmt.Sprintf("kin=%d/kout=%d/size=%d", c.kin, c.kout, c.size), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(c.kin*31 + c.kout*7 + c.size + 1)))
 			keys := make([]byte, 10000)

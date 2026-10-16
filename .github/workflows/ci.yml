@@ -11,27 +11,63 @@ on:
       - main
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.23"
+          go-version: stable
+          # The root module has no dependencies (and so no go.sum); compat's
+          # are three tiny archived modules. Nothing worth caching.
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+
+      # compat is a separate module, so it needs its own run; it shares the
+      # root configuration.
+      - name: golangci-lint (compat)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          working-directory: compat
+          args: --config=../.golangci.yml
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The minimum from go.mod, and the current release.
+        go: ["1.23", "stable"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
 
       - name: Build
         run: go build ./...
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: latest
+      - name: Vet
+        run: go vet ./...
 
+      # -coverpkg so that internal packages are credited with the coverage
+      # they get from the root package's tests, not only from their own.
       - name: Test
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 
       # compat is a separate module (it depends on the archived upstream
       # packages) so ./... from the root does not reach it.
@@ -42,11 +78,35 @@ jobs:
       # A release tag points at a commit already pushed to main, so this
       # workflow also runs for the tag ref. Skip the upload then: it's the
       # same coverage.out for the same commit, and a second session on the
-      # same SHA confuses Codecov's patch-coverage line attribution.
+      # same SHA confuses Codecov's patch-coverage line attribution. Upload
+      # from one matrix leg only, for the same reason.
       - name: Upload coverage to Codecov
-        if: github.ref_type != 'tag'
-        uses: codecov/codecov-action@v4
+        if: github.ref_type != 'tag' && matrix.go == 'stable'
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.out
           fail_ci_if_error: true
+
+  # Slot links are int32 and MaxSize is math.MaxInt32, which equals MaxInt
+  # on 32-bit platforms; make sure the tests still build and pass there.
+  # The race detector does not support 386, so this runs without it.
+  test-386:
+    runs-on: ubuntu-latest
+    env:
+      GOARCH: "386"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Differential tests against upstream
+        working-directory: compat
+        run: go test ./...

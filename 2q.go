@@ -1,3 +1,28 @@
+// Package twoqueue implements a thread-safe, fixed-size, generic 2Q cache
+// (Johnson & Shasha, "2Q: A Low Overhead High Performance Buffer
+// Management Replacement Algorithm", VLDB 1994).
+//
+// A 2Q cache keeps keys seen once in a FIFO (A1in), remembers the keys it
+// pages out of it in a ghost FIFO that holds no values (A1out), and
+// promotes a key into an LRU (Am) only when it is requested again while
+// still remembered there. A burst of one-off keys therefore cycles through
+// A1in without displacing the frequently used entries in Am.
+//
+// The import path is github.com/d1n-go/2q; the package name is twoqueue
+// because an identifier cannot start with a digit:
+//
+//	import twoqueue "github.com/d1n-go/2q"
+//
+//	cache := twoqueue.New[string, int](1024)
+//	cache.Set("answer", 42)
+//	if v := cache.Get("answer"); v != nil {
+//		fmt.Println(*v)
+//	}
+//
+// Every method takes a single cache-wide mutex, Get included (it updates
+// recency), so throughput does not scale with the number of goroutines
+// hitting one cache. Under heavy contention, shard keys across several
+// caches.
 package twoqueue
 
 import (
@@ -15,7 +40,7 @@ const (
 	Default2QRecentRatio = 0.25
 
 	// Default2QGhostEntries is the default ratio of ghost
-	// entries kept to track entries recently evicted
+	// entries kept to track entries recently evicted.
 	Default2QGhostEntries = 0.50
 )
 
@@ -25,8 +50,8 @@ const (
 // entries separately. This avoids a burst in access to new
 // entries from evicting frequently used entries. It adds some
 // additional tracking overhead to the standard LRU cache, and is
-// computationally about 2x the cost, and adds some metadata over
-// head.
+// computationally about 2x the cost, and adds some metadata
+// overhead.
 //
 // All methods take a single cache-wide lock: every operation touches up
 // to three internal queues, and the promotion logic in Set is a
@@ -122,13 +147,34 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 	return e
 }
 
-// Set stores key/value pair in 2Q cache following 2Q Full Version promotion algorytm.
+// Set stores key/value pair in 2Q cache following 2Q Full Version promotion
+// algorithm. It returns the key/value pair the cache stopped holding because
+// of this call, or nil if nothing left the cache:
+//
+//   - Updating a key that is already cached returns that key with its
+//     previous value. The key stays cached, now with the new value, and
+//     keeps its queue (an update does not promote out of A1in).
+//   - Storing a key that does not fit returns the entry evicted to make
+//     room: the oldest entry of A1in, or the least recently used one of Am.
+//   - With a zero-capacity queue (see NewParams) it can return the key and
+//     value just passed in, which were then not stored at all.
+//
+// A non-nil result therefore always carries a value that is no longer
+// reachable through the cache, so it is the place to release whatever that
+// value holds. The one caveat is re-setting a key to the value it already
+// has: the returned Value is then that same, still cached value.
 func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
 	if e := L.frequent.Peek(key); e != nil {
 		return fromLruEvicted(L.frequent.Set(key, value))
+	}
+
+	if e := L.recent.Get(key); e != nil {
+		previous := *e
+		L.recent.Push(key, value) // replaces the value in place, FIFO position unchanged
+		return &Evicted[K, V]{key, previous}
 	}
 
 	if L.recentEvict.Get(key) != nil {
@@ -198,7 +244,7 @@ func (L *TwoQueue[K, V]) Purge() {
 	L.recent.Purge()
 }
 
-// Len returns size of cache (frequent + recent items)
+// Len returns size of cache (frequent + recent items).
 func (L *TwoQueue[K, V]) Len() int {
 	L.mu.Lock()
 	defer L.mu.Unlock()
@@ -231,7 +277,8 @@ func (L *TwoQueue[K, V]) Remove(key K) *V {
 }
 
 // MaxSize is the largest capacity accepted for any single queue by
-// NewParams (and therefore the largest size accepted by New).
+// NewParams. New panics once its largest split, the Am share of
+// 1-Default2QRecentRatio, exceeds it: for sizes above MaxSize/0.75.
 const MaxSize = ring.MaxSize
 
 // NewParams creates 2Q cache with specified capacities:
@@ -249,7 +296,10 @@ const MaxSize = ring.MaxSize
 // - Kout should hold 5000 items.
 // - And size should take the rest 7500 items.
 //
-// Cache will preallocate size count of internal structures to avoid allocation in process.
+// The queues' slots and key indexes are preallocated up front, so a full
+// cache does not grow. Each Set still allocates a box for the value: that
+// is what keeps a pointer returned by Get valid after the entry is updated
+// or evicted.
 //
 // A negative capacity is treated as zero. A zero-capacity queue never
 // holds anything: with Kin == 0 every new key is reported as evicted by

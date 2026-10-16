@@ -2,10 +2,10 @@
 // modules it replaced (floatdrop/2q v0.1.1 on floatdrop/lru v1.2.1 and
 // floatdrop/fifo v0.1.1) and pins down exactly how the two differ.
 //
-// The fork is meant to be a drop-in replacement, with one intentional
-// behavioral change: upstream's lru/fifo evict a slot by unconditionally
-// deleting the index entry for whatever key the slot last held, even when
-// the slot is empty (never used, or freed by Remove). If that stale key is
+// The fork is meant to be a drop-in replacement, with two intentional
+// behavioral changes. The first fixes a storage bug: upstream's lru/fifo
+// evict a slot by unconditionally deleting the index entry for whatever
+// key the slot last held, even when the slot is empty (never used, or freed by Remove). If that stale key is
 // live in another slot, the live entry silently vanishes. internal/ring
 // only deletes the index entry when the slot actually holds a value.
 //
@@ -16,12 +16,20 @@
 // recently evicted and the next Set of it goes to recent instead of
 // frequent, so eviction decisions diverge even without any user Remove.
 // A direct "fork == upstream" comparison is therefore not the right
-// statement. Instead the tests below run each implementation in lockstep
-// with a slot-level model of the shared storage whose only knob is that
-// unconditional delete: the fork must match the model with it switched
-// off, upstream must match the model with it switched on. Together that
-// establishes the unconditional delete as the only behavioral difference.
-// Three deterministic tests then document the concrete consequences.
+// statement.
+//
+// The second is an API contract: Set on a key already cached in A1in
+// (recent) replaces its value. Upstream returns nil there, dropping the
+// previous value without a trace, while an update in Am (frequent)
+// returns it; the fork returns the previous value in both cases, so a
+// non-nil Set result always carries a value the cache no longer holds.
+//
+// The tests below run each implementation in lockstep with a slot-level
+// model of the shared storage that has exactly two knobs, one per change:
+// the fork must match the model with unconditionalDelete off and
+// reportRecentUpdate on, upstream with the opposite settings. Together
+// that establishes these two as the only behavioral differences. Four
+// deterministic tests then document the concrete consequences.
 package compat
 
 import (
@@ -185,13 +193,15 @@ func (f *modelFIFO) push(key, val int) (evK, evV int, evicted bool) {
 type model2Q struct {
 	recent, recentEvict *modelFIFO
 	frequent            *modelLRU
+	reportRecentUpdate  bool
 }
 
-func newModel2Q(kin, kout, size int, unconditionalDelete bool) *model2Q {
+func newModel2Q(kin, kout, size int, unconditionalDelete, reportRecentUpdate bool) *model2Q {
 	return &model2Q{
-		recent:      &modelFIFO{newSlotQueue(kin, unconditionalDelete), kin},
-		recentEvict: &modelFIFO{newSlotQueue(kout, unconditionalDelete), kout},
-		frequent:    &modelLRU{newSlotQueue(size, unconditionalDelete), size},
+		recent:             &modelFIFO{newSlotQueue(kin, unconditionalDelete), kin},
+		recentEvict:        &modelFIFO{newSlotQueue(kout, unconditionalDelete), kout},
+		frequent:           &modelLRU{newSlotQueue(size, unconditionalDelete), size},
+		reportRecentUpdate: reportRecentUpdate,
 	}
 }
 
@@ -220,6 +230,11 @@ func (m *model2Q) set(key, val int) (evK, evV int, evicted bool) {
 	if m.frequent.peek(key) != nil {
 		return m.frequent.set(key, val)
 	}
+	if prev := m.recent.get(key); prev != nil && m.reportRecentUpdate {
+		old := *prev
+		m.recent.push(key, val)
+		return key, old, true
+	}
 	if m.recentEvict.get(key) != nil {
 		m.recentEvict.q.remove(key)
 		return m.frequent.set(key, val)
@@ -240,13 +255,11 @@ func (m *model2Q) length() int { return len(m.recent.q.index) + len(m.frequent.q
 // ---------------------------------------------------------------------
 
 type outcome struct {
-	found      bool
-	value      int
-	evicted    bool
-	evK, evV   int
-	length     int
-	extra      string // implementation-defined detail for diagnostics
-	skipLength bool
+	found    bool
+	value    int
+	evicted  bool
+	evK, evV int
+	length   int
 }
 
 func (o outcome) String() string {
@@ -368,12 +381,12 @@ func newUpstreamCache(kin, kout, size int) cache {
 	return upstreamCache{upstream.NewParams[int, int](kin, kout, size)}
 }
 
-// modelPairs compares each implementation against the slot model with the
-// unconditional-delete switch set the way that implementation behaves.
+// modelPairs compares each implementation against the slot model with both
+// switches set the way that implementation behaves.
 func modelPairs(kin, kout, size int) []pair {
 	return []pair{
-		{"fork vs model(unconditionalDelete=false)", newForkCache(kin, kout, size), modelCache{newModel2Q(kin, kout, size, false)}},
-		{"upstream vs model(unconditionalDelete=true)", newUpstreamCache(kin, kout, size), modelCache{newModel2Q(kin, kout, size, true)}},
+		{"fork vs model(unconditionalDelete=false, reportRecentUpdate=true)", newForkCache(kin, kout, size), modelCache{newModel2Q(kin, kout, size, false, true)}},
+		{"upstream vs model(unconditionalDelete=true, reportRecentUpdate=false)", newUpstreamCache(kin, kout, size), modelCache{newModel2Q(kin, kout, size, true, false)}},
 	}
 }
 
@@ -404,7 +417,6 @@ func TestForkAndUpstreamAgainstSlotModelProperty(t *testing.T) {
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1},
 		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4}, {64, 128, 192},
 	} {
-		c := c
 		r := rand.New(rand.NewSource(int64(c.kin*97 + c.kout*13 + c.size + 1)))
 		ops := make([]byte, 8000)
 		r.Read(ops)
@@ -494,5 +506,27 @@ func TestKnownDivergence_GhostQueueForgetsKey(t *testing.T) {
 	}
 	if e := fk.Set(1, 1); e == nil || e.Key != 6 {
 		t.Fatalf("fork must promote key 1 into frequent and evict 6, got %+v", e)
+	}
+}
+
+// TestKnownDivergence_RecentUpdate documents the API change: updating a
+// key that sits in A1in returns its previous value from the fork, while
+// upstream returns nil. Both keep the key in A1in with the new value.
+func TestKnownDivergence_RecentUpdate(t *testing.T) {
+	u := upstream.NewParams[int, int](2, 2, 2)
+	fk := fork.NewParams[int, int](2, 2, 2)
+	u.Set(1, 10)
+	fk.Set(1, 10)
+
+	if e := u.Set(1, 11); e != nil {
+		t.Fatalf("upstream is expected to drop the previous value silently, got %+v", e)
+	}
+	if e := fk.Set(1, 11); e == nil || e.Key != 1 || e.Value != 10 {
+		t.Fatalf("fork must return the previous value {1 10}, got %+v", e)
+	}
+	for name, v := range map[string]*int{"upstream": u.Get(1), "fork": fk.Get(1)} {
+		if v == nil || *v != 11 {
+			t.Fatalf("%s must hold the new value 11, got %v", name, v)
+		}
 	}
 }
