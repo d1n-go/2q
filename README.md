@@ -9,9 +9,11 @@ Thread safe GoLang [2Q](http://www.vldb.org/conf/1994/P439.PDF) cache.
 
 Maintained fork of the archived [floatdrop/2q](https://github.com/floatdrop/2q).
 Its former dependencies (`floatdrop/lru`, `floatdrop/fifo`, both also archived)
-have been folded in as internal packages, and their `bahlo/generic-list-go`
-based linked list was replaced by a slice-backed ring (`internal/ring`) — so
-this module has zero dependencies outside the standard library. The upstream
+have been folded in: their `bahlo/generic-list-go` based linked lists became a
+preallocated slice-backed ring (`internal/ring`), and their per-queue maps a
+single key index shared by all three queues — so this module has zero
+dependencies outside the standard library and is about twice as fast as
+upstream (see [Benchmarks](#benchmarks)). The upstream
 API is kept as is and extended (see [API](#api)); see
 [NOTICE.md](NOTICE.md) for attribution.
 
@@ -111,9 +113,21 @@ entry is updated or evicted (the cache never writes through it), but writing
 through it yourself is not synchronized by the cache.
 
 Every method takes a single cache-wide mutex, `Get` included, because 2Q
-updates recency on reads. One cache therefore does not scale across cores
-under heavy concurrent access (`go test -run '^$' -bench ParallelGet -cpu
-1,4,8` shows it); shard keys across several caches if that matters.
+updates recency on reads. Under heavy concurrent access one cache does not
+just stop scaling, its total throughput **drops**: the cores spend their time
+handing the mutex's cache line back and forth. On an M1 Pro, `Get` on a warm
+cache takes about 14 ns from one goroutine and about 150 ns per operation
+(total, not per goroutine) from eight, i.e. roughly a tenth of the
+throughput; `go test -run '^$' -bench ParallelGet -cpu 1,4,8` reproduces it.
+
+This only matters for a cache hit millions of times per second from many
+cores; next to a database or network round trip it is noise. Check a mutex
+profile first. If it does matter, shard: route each key by hash to one of N
+independent caches of size/N. With 64 shards and eight goroutines the same
+`Get` workload ran at about 20 ns/op, and a 90% `Get` / 10% `Set` mix at
+about 45 ns/op instead of 250. Each shard is its own 2Q, so eviction is
+per shard rather than global, which with a decent hash is statistically
+close.
 
 ## TTL
 
@@ -184,24 +198,26 @@ func main() {
 
 ## Benchmarks
 
-Measured against the original `floatdrop/2q` + `floatdrop/lru` + `floatdrop/fifo` (last released versions, before archiving) with `benchstat`, same machine, `-count=10`:
+Measured against the original `floatdrop/2q` v0.1.1 + `floatdrop/lru` v1.2.1 + `floatdrop/fifo` v0.1.1 (last released versions, before archiving) with the same benchmark code (`Benchmark2Q_Rand`, `Benchmark2Q_Freq` in `2q_test.go`), `benchstat`, `-count=10`, Apple M1 Pro:
 
 ```
-name        old time/op    new time/op    delta
-2Q_Rand-8      288ns ± 4%     301ns ± 3%   +4.37%  (p=0.001)
-2Q_Freq-8      273ns ± 1%     264ns ± 1%   -3.55%  (p=0.000)
-geomean        281ns          282ns        +0.33%  (statistically indistinguishable overall)
+          │  upstream   │                fork                 │
+          │   sec/op    │   sec/op     vs base                │
+2Q_Rand-8   286.4n ± 1%   151.5n ± 1%  -47.10% (p=0.000 n=10)
+2Q_Freq-8   263.2n ± 1%   140.1n ± 1%  -46.78% (p=0.000 n=10)
 
-name        old alloc/op   new alloc/op   delta
-2Q_Rand-8      46.0B ± 2%     46.0B ± 2%   ~ (p=1.000)
-2Q_Freq-8      44.0B ± 0%     44.0B ± 0%   ~ (p=1.000)
+          │    B/op    │    B/op     vs base                │
+2Q_Rand-8   46.00 ± 0%   30.00 ± 0%  -34.78% (p=0.000 n=10)
+2Q_Freq-8   44.00 ± 0%   29.00 ± 0%  -34.09% (p=0.000 n=10)
 
-name        old allocs/op  new allocs/op  delta
-2Q_Rand-8      3.00 ± 0%      3.00 ± 0%    ~ (p=1.000)
-2Q_Freq-8      3.00 ± 0%      3.00 ± 0%    ~ (p=1.000)
+          │ allocs/op  │ allocs/op   vs base                │
+2Q_Rand-8   3.000 ± 0%   2.000 ± 0%  -33.33% (p=0.000 n=10)
+2Q_Freq-8   3.000 ± 0%   2.000 ± 0%  -33.33% (p=0.000 n=10)
 ```
 
-At the public `TwoQueue` API level, performance is on par with the original (one workload slightly faster, one slightly slower, both within single-digit noise), with identical memory/allocation profile. Since then, `Set` also returns the previous value when it updates a key in the recent queue (see [Differences from upstream](#differences-from-upstream)); that allocates an `Evicted` where upstream returned `nil`, which on these workloads adds about 1 B/op and a few percent of time, with allocs/op unchanged. The `internal/ring` rewrite also fixes a latent bug present in the original `lru`/`fifo`: their eviction path deleted a cache entry keyed by a preallocated-but-never-used node's zero value, which could silently drop an unrelated real entry whose key equalled that zero value (e.g. key `0` for `int` keys). `internal/ring` only clears an index entry for a slot that was actually occupied.
+Most of the gain comes from the shared key index: upstream (and this fork up to v0.5.0) kept one map per queue, so a `Set` of a new key into full queues probed all three maps and then updated two of them, about nine map operations; with one index mapping a key to its queue and slot it is four, and every `Get` is a single lookup. The remaining allocations are the value box that keeps pointers returned by `Get` valid, and the `Evicted` that `Set` returns. The cache's own memory is unchanged to slightly smaller (one map instead of three).
+
+These are single-goroutine numbers; see [API](#api) for what happens under contention.
 
 ## Correctness
 

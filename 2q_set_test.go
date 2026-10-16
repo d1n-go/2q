@@ -17,7 +17,10 @@ func TestSet_ReturnContract(t *testing.T) {
 	if e := l.Set("a", 2); e == nil || e.Key != "a" || e.Value != 1 {
 		t.Fatalf("update in recent must return the previous value {a 1}, got %+v", e)
 	}
-	if v := l.Peek("a"); v == nil || *v != 2 || l.frequent.Contains("a") {
+	if q, _ := queueOf(l, "a"); q != inRecent {
+		t.Fatalf("update in recent must not promote the key, it is now in queue %d", q)
+	}
+	if v := l.Peek("a"); v == nil || *v != 2 {
 		t.Fatalf("update in recent must keep the key in recent with the new value, got %v", v)
 	}
 

@@ -29,8 +29,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/d1n-go/2q/internal/fifo"
-	"github.com/d1n-go/2q/internal/lru"
 	"github.com/d1n-go/2q/internal/ring"
 )
 
@@ -53,11 +51,9 @@ const (
 // computationally about 2x the cost, and adds some metadata
 // overhead.
 //
-// All methods take a single cache-wide lock: every operation touches up
-// to three internal queues, and the promotion logic in Set is a
-// check-then-act across them, so per-queue locking alone would let two
-// concurrent writers of the same key leave a copy of it in both recent
-// and frequent.
+// All methods take a single cache-wide lock: the three queues share one
+// key index, and Set moves keys between them, so every operation must see
+// and leave all of them consistent.
 //
 // Get, Peek and Remove return a pointer to the value stored in the cache
 // rather than a copy. Writing through that pointer is visible to every
@@ -75,14 +71,36 @@ const (
 // access would. Floating-point NaN keys are comparable but never equal
 // to themselves: a NaN entry can never be found again, and since a map
 // entry keyed by NaN cannot be deleted, every Set of a NaN key leaks an
-// index entry and inflates Len. Do not use NaN as a key.
+// index entry (the slot it took is recycled normally). Do not use NaN as
+// a key.
 type TwoQueue[K comparable, V any] struct {
-	mu          sync.Mutex
-	recent      *fifo.FIFO[K, V]        // A1in in paper
-	recentEvict *fifo.FIFO[K, struct{}] // A1out in paper
-	frequent    *lru.LRU[K, V]          // Am in paper
+	mu sync.Mutex
+	// index maps every key held by any of the three queues to where it
+	// lives. A key is in at most one queue, and every occupied slot has an
+	// entry here pointing back at it.
+	index       map[K]location
+	recent      *ring.Ring[K, V]        // A1in in paper: FIFO
+	recentEvict *ring.Ring[K, struct{}] // A1out in paper: ghost FIFO of keys
+	frequent    *ring.Ring[K, V]        // Am in paper: LRU
 	stats       Stats
 }
+
+type queue uint8
+
+const (
+	inRecent queue = iota
+	inRecentEvict
+	inFrequent
+)
+
+type location struct {
+	queue queue
+	slot  int32
+}
+
+// ghost is the value stored in every occupied A1out slot; Ring treats a
+// nil value as an empty slot. Pointers to zero-size values do not allocate.
+var ghost = &struct{}{}
 
 // Stats holds the cache's hit/miss counters. Only Get is counted: Peek,
 // Contains and Set are not lookups on behalf of a consumer, and a Get on
@@ -106,37 +124,21 @@ type Evicted[K comparable, V any] struct {
 	Value V
 }
 
-func fromLruEvicted[K comparable, V any](e *lru.Evicted[K, V]) *Evicted[K, V] {
-	if e == nil {
-		return nil
-	}
-
-	return &Evicted[K, V]{
-		e.Key,
-		e.Value,
-	}
-}
-
-func fromFifoEvicted[K comparable, V any](e *fifo.Evicted[K, V]) *Evicted[K, V] {
-	if e == nil {
-		return nil
-	}
-
-	return &Evicted[K, V]{
-		e.Key,
-		e.Value,
-	}
-}
-
 // Get probes frequent and recent cached items and returns pointer to value (or nil if it was not found).
 // A hit in the frequent queue marks the entry as most recently used.
 func (L *TwoQueue[K, V]) Get(key K) *V {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	e := L.frequent.Get(key)
-	if e == nil {
-		e = L.recent.Get(key)
+	var e *V
+	if loc, ok := L.index[key]; ok {
+		switch loc.queue {
+		case inFrequent:
+			L.frequent.MoveToFront(loc.slot)
+			e = L.frequent.Value(loc.slot)
+		case inRecent:
+			e = L.recent.Value(loc.slot)
+		}
 	}
 
 	if e != nil {
@@ -167,26 +169,84 @@ func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	if e := L.frequent.Peek(key); e != nil {
-		return fromLruEvicted(L.frequent.Set(key, value))
+	loc, ok := L.index[key]
+	if !ok {
+		return L.pushRecent(key, value)
 	}
 
-	if e := L.recent.Get(key); e != nil {
-		previous := *e
-		L.recent.Push(key, value) // replaces the value in place, FIFO position unchanged
+	switch loc.queue {
+	case inFrequent:
+		previous := *L.frequent.Value(loc.slot)
+		L.frequent.MoveToFront(loc.slot)
+		L.frequent.SetValue(loc.slot, &value)
 		return &Evicted[K, V]{key, previous}
+	case inRecent:
+		// FIFO: an update keeps the entry's position.
+		previous := *L.recent.Value(loc.slot)
+		L.recent.SetValue(loc.slot, &value)
+		return &Evicted[K, V]{key, previous}
+	default: // inRecentEvict: seen again while remembered, promote.
+		L.recentEvict.Remove(loc.slot)
+		return L.pushFrequent(key, value)
+	}
+}
+
+// pushRecent inserts a key that is in no queue into A1in, paging the
+// oldest A1in entry out to A1out if A1in is full.
+func (L *TwoQueue[K, V]) pushRecent(key K, value V) *Evicted[K, V] {
+	if L.recent.Cap() == 0 {
+		L.pushRecentEvict(key)
+		return &Evicted[K, V]{key, value}
 	}
 
-	if L.recentEvict.Get(key) != nil {
-		L.recentEvict.Remove(key)
-		return fromLruEvicted(L.frequent.Set(key, value))
+	slot := L.recent.Back()
+	evictedKey, evictedValue := L.recent.Evict(slot, key, &value)
+	if evictedValue != nil {
+		L.pushRecentEvict(evictedKey) // re-points (or drops) its index entry
+	}
+	L.index[key] = location{inRecent, slot}
+
+	if evictedValue != nil {
+		return &Evicted[K, V]{evictedKey, *evictedValue}
+	}
+	return nil
+}
+
+// pushRecentEvict remembers key in A1out, forgetting the oldest ghost if
+// A1out is full. key may still have an index entry from the queue it just
+// left; it is overwritten, or deleted if A1out has no room at all.
+func (L *TwoQueue[K, V]) pushRecentEvict(key K) {
+	if L.recentEvict.Cap() == 0 {
+		delete(L.index, key)
+		return
 	}
 
-	if re := L.recent.Push(key, value); re != nil {
-		L.recentEvict.Push(re.Key, struct{}{})
-		return fromFifoEvicted(re)
+	slot := L.recentEvict.Back()
+	if forgotten, was := L.recentEvict.Evict(slot, key, ghost); was != nil {
+		delete(L.index, forgotten)
+	}
+	L.index[key] = location{inRecentEvict, slot}
+}
+
+// pushFrequent inserts key into Am, evicting the least recently used
+// entry if Am is full. key may still have an index entry pointing at the
+// A1out slot it was just removed from; it is overwritten or deleted.
+func (L *TwoQueue[K, V]) pushFrequent(key K, value V) *Evicted[K, V] {
+	if L.frequent.Cap() == 0 {
+		delete(L.index, key)
+		return &Evicted[K, V]{key, value}
 	}
 
+	slot := L.frequent.Back()
+	evictedKey, evictedValue := L.frequent.Evict(slot, key, &value)
+	if evictedValue != nil {
+		delete(L.index, evictedKey)
+	}
+	L.index[key] = location{inFrequent, slot}
+
+	if evictedValue != nil {
+		return &Evicted[K, V]{evictedKey, *evictedValue}
+	}
 	return nil
 }
 
@@ -196,7 +256,8 @@ func (L *TwoQueue[K, V]) Contains(key K) bool {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	return L.frequent.Contains(key) || L.recent.Contains(key)
+	loc, ok := L.index[key]
+	return ok && loc.queue != inRecentEvict
 }
 
 // Keys returns a snapshot of the cached keys: the frequent queue from
@@ -239,9 +300,10 @@ func (L *TwoQueue[K, V]) Purge() {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	L.frequent.Purge()
-	L.recentEvict.Purge()
-	L.recent.Purge()
+	clear(L.index)
+	L.frequent.Reset()
+	L.recentEvict.Reset()
+	L.recent.Reset()
 }
 
 // Len returns size of cache (frequent + recent items).
@@ -257,23 +319,36 @@ func (L *TwoQueue[K, V]) Peek(key K) *V {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	if e := L.frequent.Peek(key); e != nil {
-		return e
+	if loc, ok := L.index[key]; ok {
+		switch loc.queue {
+		case inFrequent:
+			return L.frequent.Value(loc.slot)
+		case inRecent:
+			return L.recent.Value(loc.slot)
+		}
 	}
-
-	return L.recent.Get(key)
+	return nil
 }
 
 // Remove method removes entry associated with key and returns pointer to removed value (or nil if entry was not in cache).
+// A key only remembered in the ghost queue is not cached and stays remembered.
 func (L *TwoQueue[K, V]) Remove(key K) *V {
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
-	if e := L.frequent.Remove(key); e != nil {
-		return e
+	loc, ok := L.index[key]
+	if !ok || loc.queue == inRecentEvict {
+		return nil
 	}
 
-	return L.recent.Remove(key)
+	r := L.recent
+	if loc.queue == inFrequent {
+		r = L.frequent
+	}
+	v := r.Value(loc.slot)
+	r.Remove(loc.slot)
+	delete(L.index, key)
+	return v
 }
 
 // MaxSize is the largest capacity accepted for any single queue by
@@ -317,10 +392,12 @@ const MaxSize = ring.MaxSize
 // capacity whose preallocation exhausts memory) come from the runtime
 // and are documented on TwoQueue.
 func NewParams[K comparable, V any](Kin int, Kout int, size int) *TwoQueue[K, V] {
+	kin, kout, am := clampSize(Kin), clampSize(Kout), clampSize(size)
 	return &TwoQueue[K, V]{
-		recent:      fifo.New[K, V](clampSize(Kin)),
-		recentEvict: fifo.New[K, struct{}](clampSize(Kout)),
-		frequent:    lru.New[K, V](clampSize(size)),
+		index:       make(map[K]location, kin+kout+am),
+		recent:      ring.New[K, V](kin),
+		recentEvict: ring.New[K, struct{}](kout),
+		frequent:    ring.New[K, V](am),
 	}
 }
 

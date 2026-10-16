@@ -8,20 +8,16 @@ import (
 )
 
 // checkNoDuplicateKeys asserts the core cross-queue invariant: a key lives
-// in at most one of recent/frequent, and Len() counts each key once. It is
-// called with no other goroutines touching l, so the internal queues can be
-// inspected directly.
+// in at most one queue (checkIndex), and Len() counts each cached key
+// once. It is called with no other goroutines touching l, so the internal
+// queues can be inspected directly.
 func checkNoDuplicateKeys(t *testing.T, l *TwoQueue[int, int], keyDomain int) {
 	t.Helper()
 
+	checkIndex(t, l)
 	present := 0
 	for k := range keyDomain {
-		inRecent := l.recent.Get(k) != nil
-		inFrequent := l.frequent.Peek(k) != nil
-		if inRecent && inFrequent {
-			t.Fatalf("key %d is present in both recent and frequent", k)
-		}
-		if inRecent || inFrequent {
+		if l.Contains(k) {
 			present++
 		}
 	}

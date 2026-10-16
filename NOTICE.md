@@ -2,13 +2,17 @@
 
 This repository is a maintained fork of [floatdrop/2q](https://github.com/floatdrop/2q)
 (archived). Its two former dependencies have been folded directly into this
-module as `internal/lru` and `internal/fifo`, so the module no longer depends
-on anything outside the Go standard library:
+module, so it no longer depends on anything outside the Go standard library:
 
 - [floatdrop/lru](https://github.com/floatdrop/lru) (archived) — MIT License,
-  Copyright (c) Vsevolod Strukchinsky. Code incorporated into `internal/lru`.
+  Copyright (c) Vsevolod Strukchinsky.
 - [floatdrop/fifo](https://github.com/floatdrop/fifo) (archived) — MIT License,
-  Copyright (c) Vsevolod Strukchinsky. Code incorporated into `internal/fifo`.
+  Copyright (c) Vsevolod Strukchinsky.
+
+Their code was first vendored as `internal/lru` and `internal/fifo`; the
+queue logic it implemented (LRU and FIFO semantics, eviction reporting, the
+zero-capacity behavior) now lives in `2q.go`, on top of `internal/ring` and a
+single key index shared by the three queues.
 
 Both of the above depended on
 [bahlo/generic-list-go](https://github.com/bahlo/generic-list-go) — BSD-3-Clause

@@ -5,9 +5,12 @@
 // The fork is meant to be a drop-in replacement, with two intentional
 // behavioral changes. The first fixes a storage bug: upstream's lru/fifo
 // evict a slot by unconditionally deleting the index entry for whatever
-// key the slot last held, even when the slot is empty (never used, or freed by Remove). If that stale key is
-// live in another slot, the live entry silently vanishes. internal/ring
-// only deletes the index entry when the slot actually holds a value.
+// key the slot last held, even when the slot is empty (never used, or
+// freed by Remove). If that stale key is live in another slot, the live
+// entry silently vanishes. The fork only deletes the index entry when the
+// slot actually holds a value. (The fork has since merged the per-queue
+// indexes into one, which the slot model does not need to know about:
+// it only changes how keys are found, not which slots they occupy.)
 //
 // That bug is reachable from a plain Set-only workload: promoting a key
 // out of the ghost queue (A1out) Removes it there, leaving a stale-keyed

@@ -1,9 +1,12 @@
 // Package ring implements a fixed-capacity intrusive ring of key/value
-// slots backed by a single slice, combined with a key index. It replaces
-// the previous container/list-based approach (a doubly linked list of
-// heap-allocated elements plus a separate map) used by the lru and fifo
-// packages: all node storage is preallocated once in New, and links are
-// plain slice indices instead of pointers.
+// slots backed by a single slice. It replaces the container/list-based
+// approach of the upstream lru and fifo packages (a doubly linked list of
+// heap-allocated elements): all node storage is preallocated once in New,
+// and links are plain slice indices instead of pointers.
+//
+// A Ring does not index its keys. The caller keeps one index for all of
+// its rings, mapping a key to the ring and slot that hold it, and must
+// update it from what Evict and Remove report.
 package ring
 
 import (
@@ -25,10 +28,13 @@ type node[K comparable, V any] struct {
 // around a sentinel node at index root, mirroring the structure of
 // container/list: root.next is the front (most recently used/inserted)
 // slot and root.prev is the back (eviction victim) slot.
+//
+// A slot is occupied while its value is non-nil; empty slots always sit
+// together at the back, so Back is empty exactly when the ring has room.
 type Ring[K comparable, V any] struct {
 	nodes []node[K, V]
-	index map[K]int32
 	root  int32
+	len   int
 }
 
 // New creates a Ring with size preallocated, empty slots. It panics if
@@ -41,7 +47,6 @@ func New[K comparable, V any](size int) *Ring[K, V] {
 
 	r := &Ring[K, V]{
 		nodes: make([]node[K, V], size+1),
-		index: make(map[K]int32, size),
 		root:  int32(size),
 	}
 	r.Reset()
@@ -50,11 +55,11 @@ func New[K comparable, V any](size int) *Ring[K, V] {
 }
 
 // Reset empties the ring: every slot is zeroed (dropping the keys and
-// values it held) and relinked in index order behind the sentinel, and
-// the index is cleared. Capacity is unchanged.
+// values it held) and relinked in slot order behind the sentinel.
+// Capacity is unchanged.
 func (r *Ring[K, V]) Reset() {
 	clear(r.nodes)
-	clear(r.index)
+	r.len = 0
 
 	size := r.root
 	if size == 0 {
@@ -78,10 +83,9 @@ func (r *Ring[K, V]) Reset() {
 	r.nodes[r.root].prev = size - 1
 }
 
-// Find returns the slot index holding key, if any.
-func (r *Ring[K, V]) Find(key K) (int32, bool) {
-	i, ok := r.index[key]
-	return i, ok
+// Cap returns the number of slots.
+func (r *Ring[K, V]) Cap() int {
+	return int(r.root)
 }
 
 // Key returns the key currently stored in slot i.
@@ -136,36 +140,34 @@ func (r *Ring[K, V]) MoveToBack(e int32) {
 	r.move(e, r.nodes[r.root].prev)
 }
 
-// Evict removes whatever key currently occupies slot i from the index,
-// installs key/value in its place, moves it to the front, and returns
-// the key/value that were evicted (evictedValue is nil if the slot was
-// empty).
+// Evict installs key/value (value must be non-nil) in slot i, moves it to
+// the front, and returns what the slot held before. evictedValue is nil
+// if the slot was empty: evictedKey is then just K's zero value, which
+// may coincide with a real key stored elsewhere, so the caller must drop
+// evictedKey from its index only when evictedValue is non-nil. (Upstream
+// deleted it unconditionally; that was its data-loss bug.)
 func (r *Ring[K, V]) Evict(i int32, key K, value *V) (evictedKey K, evictedValue *V) {
 	evictedKey, evictedValue = r.nodes[i].key, r.nodes[i].value
-	// An empty slot was never indexed (its key is just K's zero value,
-	// which may coincide with a real, unrelated key elsewhere in the
-	// ring) — only clear the index for a slot that actually held a value.
-	if evictedValue != nil {
-		delete(r.index, evictedKey)
+	if evictedValue == nil {
+		r.len++
 	}
 
 	r.nodes[i].key = key
 	r.nodes[i].value = value
-	r.index[key] = i
 	r.MoveToFront(i)
 
 	return evictedKey, evictedValue
 }
 
-// Remove empties slot i, unlinks its key from the index and moves the
-// slot to the back so it is the next one reused. The key is zeroed as
-// well so that a removed entry does not keep its key (and whatever that
-// key references) alive until the slot is recycled.
+// Remove empties occupied slot i and moves it to the back so it is the
+// next one reused. The key is zeroed as well so that a removed entry does
+// not keep its key (and whatever that key references) alive until the
+// slot is recycled.
 func (r *Ring[K, V]) Remove(i int32) {
-	delete(r.index, r.nodes[i].key)
 	var zero K
 	r.nodes[i].key = zero
 	r.nodes[i].value = nil
+	r.len--
 	r.MoveToBack(i)
 }
 
@@ -181,7 +183,7 @@ func (r *Ring[K, V]) AppendKeys(dst []K) []K {
 	return dst
 }
 
-// Len returns the number of slots currently associated with a key.
+// Len returns the number of occupied slots.
 func (r *Ring[K, V]) Len() int {
-	return len(r.index)
+	return r.len
 }

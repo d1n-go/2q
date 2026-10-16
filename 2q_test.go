@@ -59,8 +59,9 @@ func Benchmark2Q_Freq(b *testing.B) {
 }
 
 // Benchmark2Q_ParallelGet measures Get under contention. Every operation
-// takes the single cache-wide lock, so throughput does not grow with
-// GOMAXPROCS; compare -cpu 1,4,8 to see the cost.
+// takes the single cache-wide lock, so total throughput drops as
+// GOMAXPROCS grows (ns/op here is per operation across all goroutines);
+// compare -cpu 1,4,8 to see the cost.
 func Benchmark2Q_ParallelGet(b *testing.B) {
 	const size = 8192
 	l := New[int, int](size)

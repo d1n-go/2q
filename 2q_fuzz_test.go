@@ -9,8 +9,8 @@ import (
 
 // The types below are an independent re-implementation of the 2Q Full
 // Version promotion algorithm (recent FIFO -> recentEvict ghost FIFO ->
-// frequent LRU) built from plain slices instead of TwoQueue's
-// fifo/lru/ring stack. It is the ground truth for the differential fuzz
+// frequent LRU) built from plain slices instead of TwoQueue's shared
+// index over ring slots. It is the ground truth for the differential fuzz
 // test below: since it shares no code with the real implementation, any
 // divergence is a genuine behavioral bug rather than a shared assumption
 // baked into both sides.
@@ -31,7 +31,7 @@ func (o *oracleFIFO) find(key int) int {
 	return -1
 }
 
-// get mirrors fifo.FIFO.Get: it never reorders the queue.
+// get is a FIFO lookup: it never reorders the queue.
 func (o *oracleFIFO) get(key int) (int, bool) {
 	if i := o.find(key); i >= 0 {
 		return o.list[i].val, true
@@ -158,7 +158,7 @@ func (o *oracle2Q) peek(key int) (int, bool) {
 	if v, ok := o.frequent.peek(key); ok {
 		return v, true
 	}
-	return o.recent.get(key) // fifo.Get never reorders, so it doubles as Peek
+	return o.recent.get(key) // a FIFO get never reorders, so it doubles as Peek
 }
 
 func (o *oracle2Q) remove(key int) (int, bool) {
@@ -292,6 +292,8 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 		if got := tq.Stats(); got != want {
 			t.Fatalf("kin=%d kout=%d size=%d Stats after op %d on key %d: %+v, want %+v", kin, kout, size, op, key, got, want)
 		}
+
+		checkIndex(t, tq)
 
 		if tq.Len() != ora.length() {
 			t.Fatalf("kin=%d kout=%d size=%d Len mismatch after op %d on key %d: real=%d oracle=%d", kin, kout, size, op, key, tq.Len(), ora.length())

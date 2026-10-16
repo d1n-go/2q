@@ -8,12 +8,12 @@ import (
 func TestRing_zero(t *testing.T) {
 	r := New[int, int](0)
 
-	if r.Len() != 0 {
-		t.Fatalf("bad len: %v", r.Len())
+	if r.Len() != 0 || r.Cap() != 0 {
+		t.Fatalf("bad len/cap: %v/%v", r.Len(), r.Cap())
 	}
 
-	if _, ok := r.Find(1); ok {
-		t.Fatalf("empty ring should not contain any key")
+	if got := r.AppendKeys(nil); len(got) != 0 {
+		t.Fatalf("empty ring should not contain any key: %v", got)
 	}
 }
 
@@ -28,8 +28,8 @@ func TestRing_evictEmptySlot(t *testing.T) {
 		t.Fatalf("evicting an empty slot should return a nil value, got %v (key %v)", *oldValue, oldKey)
 	}
 
-	if got, ok := r.Find(1); !ok || got != i {
-		t.Fatalf("key should now be indexed at slot %v, got %v (found=%v)", i, got, ok)
+	if r.Key(i) != 1 || r.Value(i) != &v {
+		t.Fatalf("slot %v should now hold key 1, got key %v value %v", i, r.Key(i), r.Value(i))
 	}
 
 	if r.Len() != 1 {
@@ -51,12 +51,12 @@ func TestRing_evictOccupiedSlot(t *testing.T) {
 		t.Fatalf("expected to evict key=1 value=1, got key=%v value=%v", oldKey, oldValue)
 	}
 
-	if _, ok := r.Find(1); ok {
-		t.Fatalf("evicted key should no longer be indexed")
+	if r.Key(i) != 2 || r.Value(i) != &v2 {
+		t.Fatalf("slot %v should now hold key 2, got key %v value %v", i, r.Key(i), r.Value(i))
 	}
 
-	if got, ok := r.Find(2); !ok || got != i {
-		t.Fatalf("new key should be indexed at slot %v, got %v (found=%v)", i, got, ok)
+	if r.Len() != 1 {
+		t.Fatalf("replacing an occupied slot must not change len: %v", r.Len())
 	}
 }
 
@@ -77,10 +77,7 @@ func TestRing_moveToFrontAndBack(t *testing.T) {
 	}
 
 	// Touch key 0: move its slot to the front.
-	i0, ok := r.Find(0)
-	if !ok {
-		t.Fatalf("key 0 should be present")
-	}
+	i0 := slots[0]
 	r.MoveToFront(i0)
 
 	if got := r.Key(r.Back()); got != 1 {
@@ -105,8 +102,8 @@ func TestRing_remove(t *testing.T) {
 
 	r.Remove(i)
 
-	if _, ok := r.Find("a"); ok {
-		t.Fatalf("key should have been removed from index")
+	if got := r.AppendKeys(nil); len(got) != 0 {
+		t.Fatalf("removed key should not be listed: %v", got)
 	}
 	if r.Len() != 0 {
 		t.Fatalf("bad len: %v", r.Len())

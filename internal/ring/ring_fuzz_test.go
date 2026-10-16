@@ -7,12 +7,12 @@ import (
 )
 
 // checkInvariants walks the ring's linked list and cross-checks it against
-// the index map. Any divergence here (an unreachable slot, a stale index
-// entry, a Len() that disagrees with what's actually linked) is exactly the
-// shape of bug a ring buffer can introduce that container/list+map could
-// not: silently losing or aliasing an entry while everything still compiles
-// and "looks" fine.
-func checkInvariants(t *testing.T, r *Ring[int, int]) {
+// the caller's index map. Any divergence here (an unreachable slot, a stale
+// index entry, a Len() that disagrees with what's actually linked) is
+// exactly the shape of bug a ring buffer can introduce that container/list
+// could not: silently losing or aliasing an entry while everything still
+// compiles and "looks" fine.
+func checkInvariants(t *testing.T, r *Ring[int, int], index map[int]int32) {
 	t.Helper()
 
 	n := len(r.nodes)
@@ -45,7 +45,7 @@ func checkInvariants(t *testing.T, r *Ring[int, int]) {
 			continue
 		}
 		live++
-		idx, ok := r.index[node.key]
+		idx, ok := index[node.key]
 		if !ok {
 			t.Fatalf("slot %d holds key %v with a value but has no index entry -> DATA LOSS on next Find", i, node.key)
 		}
@@ -56,24 +56,27 @@ func checkInvariants(t *testing.T, r *Ring[int, int]) {
 	if live != r.Len() {
 		t.Fatalf("Len()=%d disagrees with %d occupied slots found by traversal", r.Len(), live)
 	}
-	if len(r.index) != live {
-		t.Fatalf("index has %d entries but only %d slots are occupied -> stale index entry aliasing a slot", len(r.index), live)
+	if len(index) != live {
+		t.Fatalf("index has %d entries but only %d slots are occupied -> stale index entry aliasing a slot", len(index), live)
 	}
 }
 
-// ringLRU drives Ring exactly the way internal/lru.LRU does (same call
-// sequence, mutex dropped since this is single-goroutine), so the fuzz
-// driver below exercises the real usage contract rather than poking at
-// Ring's primitives in isolation.
+// ringLRU drives Ring the way TwoQueue drives its Am queue: the index is
+// kept by the caller and updated from what Evict and Remove report, so the
+// fuzz driver below exercises the real usage contract rather than poking
+// at Ring's primitives in isolation.
 type ringLRU struct {
-	r    *Ring[int, int]
-	size int
+	r     *Ring[int, int]
+	index map[int]int32
+	size  int
 }
 
-func newRingLRU(size int) *ringLRU { return &ringLRU{r: New[int, int](size), size: size} }
+func newRingLRU(size int) *ringLRU {
+	return &ringLRU{r: New[int, int](size), index: map[int]int32{}, size: size}
+}
 
 func (l *ringLRU) get(key int) (int, bool) {
-	if i, ok := l.r.Find(key); ok {
+	if i, ok := l.index[key]; ok {
 		l.r.MoveToFront(i)
 		return *l.r.Value(i), true
 	}
@@ -81,7 +84,7 @@ func (l *ringLRU) get(key int) (int, bool) {
 }
 
 func (l *ringLRU) peek(key int) (int, bool) {
-	if i, ok := l.r.Find(key); ok {
+	if i, ok := l.index[key]; ok {
 		return *l.r.Value(i), true
 	}
 	return 0, false
@@ -91,7 +94,7 @@ func (l *ringLRU) set(key, val int) (evK, evV int, evicted bool) {
 	if l.size < 1 {
 		return key, val, true
 	}
-	if i, ok := l.r.Find(key); ok {
+	if i, ok := l.index[key]; ok {
 		prev := *l.r.Value(i)
 		l.r.MoveToFront(i)
 		v := val
@@ -102,15 +105,20 @@ func (l *ringLRU) set(key, val int) (evK, evV int, evicted bool) {
 	v := val
 	ek, ev := l.r.Evict(i, key, &v)
 	if ev != nil {
+		delete(l.index, ek) // only for a slot that really held ek
+	}
+	l.index[key] = i
+	if ev != nil {
 		return ek, *ev, true
 	}
 	return 0, 0, false
 }
 
 func (l *ringLRU) remove(key int) (int, bool) {
-	if i, ok := l.r.Find(key); ok {
+	if i, ok := l.index[key]; ok {
 		v := l.r.Value(i)
 		l.r.Remove(i)
+		delete(l.index, key)
 		return *v, true
 	}
 	return 0, false
@@ -129,7 +137,10 @@ func (l *ringLRU) victim() (int, bool) {
 
 func (l *ringLRU) length() int { return l.r.Len() }
 
-func (l *ringLRU) purge() { l.r.Reset() }
+func (l *ringLRU) purge() {
+	l.r.Reset()
+	clear(l.index)
+}
 
 // lruModel is an independent reference LRU built on plain slice shifting
 // (no fixed slots, no linked list, no reused storage). It shares the
@@ -266,7 +277,7 @@ func runSequence(t *testing.T, capacity int, ops []byte) {
 		if rl.length() != model.length() {
 			t.Fatalf("cap=%d Len mismatch after op %d on key %d: ring=%d model=%d", capacity, op, key, rl.length(), model.length())
 		}
-		checkInvariants(t, rl.r)
+		checkInvariants(t, rl.r, rl.index)
 	}
 }
 
@@ -299,25 +310,24 @@ func TestRingProperty(t *testing.T) {
 }
 
 // TestRing_neverUsedSlotDoesNotAliasRealEntry is a regression test for the
-// bug fixed by internal/ring (see its package doc / the vendoring commit):
-// evicting a never-used slot must not delete the index entry for K's zero
-// value if a *different* slot legitimately holds that key.
+// upstream data-loss bug: evicting a never-used slot reports K's zero value
+// as its key, and a caller that dropped that key from its index would lose
+// a real entry stored under it elsewhere. Evict must report such a slot as
+// empty (nil value) so the caller knows to leave its index alone.
 func TestRing_neverUsedSlotDoesNotAliasRealEntry(t *testing.T) {
-	r := New[int, int](2)
+	l := newRingLRU(2)
 
-	// Slot A gets the real, legitimate key 0.
-	v0 := 100
-	r.Evict(r.Back(), 0, &v0)
-
+	l.set(0, 100) // slot A gets the real, legitimate key 0
 	// Slot B has never been used: its key field is still 0 (int's zero
-	// value), value is nil. Evicting it must not touch key 0's index entry,
-	// which belongs to slot A.
-	v1 := 200
-	r.Evict(r.Back(), 1, &v1)
-
-	if i, ok := r.Find(0); !ok {
-		t.Fatalf("key 0 must still be indexed after evicting an unrelated never-used slot")
-	} else if v := r.Value(i); v == nil || *v != 100 {
-		t.Fatalf("key 0 must still map to its real value 100, got %v", v)
+	// value), value is nil.
+	slot := l.r.Back()
+	if ek, ev := l.r.Evict(slot, 1, new(int)); ev != nil {
+		t.Fatalf("a never-used slot must be reported as empty, got key %d value %d", ek, *ev)
 	}
+	l.index[1] = slot
+
+	if v, ok := l.peek(0); !ok || v != 100 {
+		t.Fatalf("key 0 must still map to its real value 100, got %v (found=%v)", v, ok)
+	}
+	checkInvariants(t, l.r, l.index)
 }
