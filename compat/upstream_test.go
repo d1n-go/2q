@@ -333,6 +333,27 @@ const (
 
 func (o opcode) String() string { return [...]string{"Get", "Set", "Peek", "Remove"}[o] }
 
+// opMix decodes op bytes 4-255 (0-3 map to the opcodes directly, so
+// hand-written seeds stay readable). Taking every opcode equally often
+// would Remove as often as it Sets, draining the cache about as fast as it
+// fills, so Am and A1out would hardly ever evict. Here Set dominates.
+var opMix = [8]opcode{opSet, opSet, opSet, opSet, opSet, opGet, opPeek, opRemove}
+
+func decodeOp(b byte) opcode {
+	if b < byte(numOps) {
+		return opcode(b)
+	}
+	return opMix[b%8]
+}
+
+// keySpanFor returns how many distinct keys a sequence draws from: two
+// more than the three queues can hold together, so each of them can fill
+// up and evict, yet few enough that keys recur while still remembered.
+// Keys are decoded from one byte, so callers keep it at most 256.
+func keySpanFor(kin, kout, size int) int {
+	return max(6, kin+kout+size+2)
+}
+
 func apply(c cache, op opcode, key, val int) outcome {
 	var o outcome
 	switch op {
@@ -360,9 +381,9 @@ type pair struct {
 func run(t *testing.T, kin, kout, size int, ops []byte, pairs []pair) {
 	t.Helper()
 
-	const keySpan = 6
+	keySpan := keySpanFor(kin, kout, size)
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := opcode(ops[i] % byte(numOps))
+		op := decodeOp(ops[i])
 		key := int(ops[i+1]) % keySpan
 		val := key*1000 + int(ops[i])
 
@@ -409,7 +430,7 @@ func FuzzForkAndUpstreamAgainstSlotModel(f *testing.F) {
 	f.Add(4, 4, 4, []byte{1, 0, 1, 1, 1, 2, 1, 3, 1, 4, 1, 0, 2, 0, 3, 1, 1, 5})
 
 	f.Fuzz(func(t *testing.T, kinByte, koutByte, sizeByte int, ops []byte) {
-		kin, kout, size := int(uint(kinByte)%5), int(uint(koutByte)%5), int(uint(sizeByte)%5)
+		kin, kout, size := int(uint(kinByte)%9), int(uint(koutByte)%9), int(uint(sizeByte)%9)
 		run(t, kin, kout, size, clampOps(ops), modelPairs(kin, kout, size))
 	})
 }
@@ -418,10 +439,11 @@ func TestForkAndUpstreamAgainstSlotModelProperty(t *testing.T) {
 	type cfg struct{ kin, kout, size int }
 	for _, c := range []cfg{
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1},
-		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4}, {64, 128, 192},
+		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4}, {8, 8, 8},
+		{16, 32, 48}, {32, 64, 96},
 	} {
 		r := rand.New(rand.NewSource(int64(c.kin*97 + c.kout*13 + c.size + 1)))
-		ops := make([]byte, 8000)
+		ops := make([]byte, 200000)
 		r.Read(ops)
 
 		t.Run(fmt.Sprintf("kin=%d/kout=%d/size=%d", c.kin, c.kout, c.size), func(t *testing.T) {

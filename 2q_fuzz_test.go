@@ -213,24 +213,68 @@ func (o *oracle2Q) purge() {
 	o.recent.list, o.recentEvict.list, o.frequent.list = nil, nil, nil
 }
 
+// The operations runTwoQueueSequence replays. Op bytes 0-7 decode to
+// them directly, so hand-written seeds stay readable.
+const (
+	opGet byte = iota
+	opSet
+	opPeek
+	opRemove
+	opPurge
+	opContains
+	opKeys
+	opResetStats
+)
+
+// opMix decodes op bytes 8-255. Taking every opcode equally often would
+// Remove as often as it Sets and Purge every eighth op, draining the cache
+// faster than it fills, so Am and A1out would hardly ever evict. Here Set
+// dominates and there is no Purge; see decodeOp.
+var opMix = [16]byte{
+	opSet, opSet, opSet, opSet, opSet, opSet, opSet, opSet,
+	opGet, opGet, opRemove, opRemove, opPeek, opContains, opKeys, opResetStats,
+}
+
+// decodeOp maps an op byte to an operation. Purge needs op byte 4 and a
+// key byte below 16 (1 in 4096 random ops), so that even the largest
+// configurations fill up between Purges; op byte 4 with a larger key byte
+// is a Set.
+func decodeOp(op, key byte) byte {
+	switch {
+	case op == opPurge && key >= 16:
+		return opSet
+	case op < 8:
+		return op
+	}
+	return opMix[op%16]
+}
+
+// keyDomainFor returns how many distinct keys a sequence draws from: two
+// more than the three queues can hold together, so each of them can fill
+// up and evict, yet few enough that keys recur while still remembered.
+// Keys are decoded from one byte, so callers keep it at most 256.
+func keyDomainFor(kin, kout, size int) int {
+	return max(6, kin+kout+size+2)
+}
+
 // runTwoQueueSequence replays ops (pairs of opcode/key bytes) against the
 // real TwoQueue and the independent oracle in lockstep, failing on the
 // first divergence in returned values, evicted entries, or Len().
 func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 	t.Helper()
 
-	const keyDomain = 6
+	keyDomain := keyDomainFor(kin, kout, size)
 	tq := NewParams[int, int](kin, kout, size)
 	ora := newOracle2Q(kin, kout, size)
 	var want Stats
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 8
+		op := decodeOp(ops[i], ops[i+1])
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
 		switch op {
-		case 0: // Get
+		case opGet:
 			var gv int
 			gp := tq.Get(key)
 			if gp != nil {
@@ -245,13 +289,13 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			} else {
 				want.Misses++
 			}
-		case 1: // Set
+		case opSet:
 			e := tq.Set(key, val)
 			evK, evV, evicted := ora.set(key, val)
 			if (e != nil) != evicted || (evicted && (e.Key != evK || e.Value != evV)) {
 				t.Fatalf("kin=%d kout=%d size=%d Set(%d,%d) mismatch: real=%+v oracle=(%d,%d,%v)", kin, kout, size, key, val, e, evK, evV, evicted)
 			}
-		case 2: // Peek
+		case opPeek:
 			var gv int
 			gp := tq.Peek(key)
 			if gp != nil {
@@ -261,7 +305,7 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			if (gp != nil) != mok || (mok && gv != mv) {
 				t.Fatalf("kin=%d kout=%d size=%d Peek(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
 			}
-		case 3: // Remove
+		case opRemove:
 			var gv int
 			gp := tq.Remove(key)
 			if gp != nil {
@@ -271,18 +315,18 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 			if (gp != nil) != mok || (mok && gv != mv) {
 				t.Fatalf("kin=%d kout=%d size=%d Remove(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
 			}
-		case 4: // Purge
+		case opPurge:
 			tq.Purge()
 			ora.purge()
-		case 5: // Contains
+		case opContains:
 			if got, want := tq.Contains(key), ora.contains(key); got != want {
 				t.Fatalf("kin=%d kout=%d size=%d Contains(%d) mismatch: real=%v oracle=%v", kin, kout, size, key, got, want)
 			}
-		case 6: // Keys
+		case opKeys:
 			if got, want := tq.Keys(), ora.keys(); !slices.Equal(got, want) {
 				t.Fatalf("kin=%d kout=%d size=%d Keys mismatch: real=%v oracle=%v", kin, kout, size, got, want)
 			}
-		case 7: // ResetStats
+		case opResetStats:
 			if got := tq.ResetStats(); got != want {
 				t.Fatalf("kin=%d kout=%d size=%d ResetStats returned %+v, want %+v", kin, kout, size, got, want)
 			}
@@ -310,9 +354,9 @@ func FuzzTwoQueueAgainstOracle(f *testing.F) {
 		if len(ops) > 4000 {
 			ops = ops[:4000]
 		}
-		kin := int(uint(kinByte) % 5)
-		kout := int(uint(koutByte) % 5)
-		size := int(uint(sizeByte) % 5)
+		kin := int(uint(kinByte) % 9)
+		kout := int(uint(koutByte) % 9)
+		size := int(uint(sizeByte) % 9)
 		runTwoQueueSequence(t, kin, kout, size, ops)
 	})
 }
@@ -321,11 +365,12 @@ func TestTwoQueueProperty(t *testing.T) {
 	type cfg struct{ kin, kout, size int }
 	for _, c := range []cfg{
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1},
-		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4},
+		{2, 2, 2}, {4, 4, 4}, {2, 4, 8}, {8, 2, 4}, {8, 8, 8},
+		{16, 32, 48}, {32, 64, 96},
 	} {
 		t.Run(fmt.Sprintf("kin=%d/kout=%d/size=%d", c.kin, c.kout, c.size), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(c.kin*97 + c.kout*13 + c.size + 1)))
-			ops := make([]byte, 6000)
+			ops := make([]byte, 200000)
 			r.Read(ops)
 			runTwoQueueSequence(t, c.kin, c.kout, c.size, ops)
 		})

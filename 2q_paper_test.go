@@ -180,7 +180,7 @@ func accessTwoQueue(c *TwoQueue[int, int], x int) (hit bool, evicted int) {
 func runAccessTrace(t *testing.T, kin, kout, size int, keys []byte) {
 	t.Helper()
 
-	const keyDomain = 8
+	keyDomain := keyDomainFor(kin, kout, size)
 	c := NewParams[int, int](kin, kout, size)
 	s := newSim2Q(partitioned, kin, kout, size)
 
@@ -208,7 +208,7 @@ func FuzzTwoQueueAgainstPaperSimulator(f *testing.F) {
 		if len(keys) > 4000 {
 			keys = keys[:4000]
 		}
-		kin, kout, size := int(uint(kinByte)%5), int(uint(koutByte)%5), int(uint(sizeByte)%5)
+		kin, kout, size := int(uint(kinByte)%9), int(uint(koutByte)%9), int(uint(sizeByte)%9)
 		runAccessTrace(t, kin, kout, size, keys)
 	})
 }
@@ -217,11 +217,12 @@ func TestTwoQueueAgainstPaperSimulatorProperty(t *testing.T) {
 	type cfg struct{ kin, kout, size int }
 	for _, c := range []cfg{
 		{0, 0, 0}, {1, 0, 0}, {0, 1, 1}, {1, 1, 1}, {0, 2, 2}, {2, 2, 0},
-		{1, 2, 3}, {2, 4, 6}, {4, 4, 4}, {3, 1, 5},
+		{1, 2, 3}, {2, 4, 6}, {4, 4, 4}, {3, 1, 5}, {8, 8, 8},
+		{16, 32, 48}, {32, 64, 96},
 	} {
 		t.Run(fmt.Sprintf("kin=%d/kout=%d/size=%d", c.kin, c.kout, c.size), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(c.kin*31 + c.kout*7 + c.size + 1)))
-			keys := make([]byte, 10000)
+			keys := make([]byte, 100000)
 			r.Read(keys)
 			runAccessTrace(t, c.kin, c.kout, c.size, keys)
 		})

@@ -222,6 +222,26 @@ func (m *lruModel) length() int { return len(m.list) }
 
 func (m *lruModel) purge() { m.list = nil }
 
+// opMix decodes op bytes 6-255 (0-5 map to the operations directly, so
+// hand-written seeds stay readable). Taking every operation equally often
+// would Remove as often as it Sets and Purge every sixth op, so the ring
+// would rarely fill up and evict. Here Set dominates and there is no
+// Purge; see decodeOp.
+var opMix = [8]byte{1, 1, 1, 1, 0, 2, 3, 4}
+
+// decodeOp maps an op byte to an operation (0 Get, 1 Set, 2 Peek, 3
+// Remove, 4 Victim, 5 Purge). Purge needs op byte 5 and a key byte below
+// 16 (1 in 4096 random ops); op byte 5 with a larger key byte is a Set.
+func decodeOp(op, key byte) byte {
+	switch {
+	case op == 5 && key >= 16:
+		return 1
+	case op < 6:
+		return op
+	}
+	return opMix[op%8]
+}
+
 // runSequence replays ops (pairs of opcode/key bytes) against a ring-backed
 // LRU and the independent model in lockstep, failing on the first
 // divergence, and re-validates the ring's internal invariants after every
@@ -229,12 +249,14 @@ func (m *lruModel) purge() { m.list = nil }
 func runSequence(t *testing.T, capacity int, ops []byte) {
 	t.Helper()
 
-	const keyDomain = 6
+	// Two more keys than slots: the ring can fill up and evict, yet keys
+	// recur often enough to hit.
+	keyDomain := max(6, capacity+2)
 	rl := newRingLRU(capacity)
 	model := &lruModel{cap: capacity}
 
 	for i := 0; i+1 < len(ops); i += 2 {
-		op := ops[i] % 6
+		op := decodeOp(ops[i], ops[i+1])
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
@@ -299,10 +321,10 @@ func FuzzRingAgainstModel(f *testing.F) {
 // cases) with long, deterministic pseudo-random sequences, independently of
 // whatever the native fuzz corpus happens to contain.
 func TestRingProperty(t *testing.T) {
-	for _, capacity := range []int{0, 1, 2, 3, 5, 8, 16} {
+	for _, capacity := range []int{0, 1, 2, 3, 5, 8, 16, 64, 200} {
 		t.Run(fmt.Sprintf("cap=%d", capacity), func(t *testing.T) {
 			r := rand.New(rand.NewSource(int64(capacity)*7919 + 1))
-			ops := make([]byte, 8000)
+			ops := make([]byte, 100000)
 			r.Read(ops)
 			runSequence(t, capacity, ops)
 		})
