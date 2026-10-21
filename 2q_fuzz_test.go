@@ -273,76 +273,86 @@ func runTwoQueueSequence(t *testing.T, kin, kout, size int, ops []byte) {
 		key := int(ops[i+1]) % keyDomain
 		val := key*1000 + int(ops[i])
 
-		switch op {
-		case opGet:
-			var gv int
-			gp := tq.Get(key)
-			if gp != nil {
-				gv = *gp
-			}
-			mv, mok := ora.get(key)
-			if (gp != nil) != mok || (mok && gv != mv) {
-				t.Fatalf("kin=%d kout=%d size=%d Get(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
-			}
-			if mok {
-				want.Hits++
-			} else {
-				want.Misses++
-			}
-		case opSet:
-			e := tq.Set(key, val)
-			evK, evV, evicted := ora.set(key, val)
-			if (e != nil) != evicted || (evicted && (e.Key != evK || e.Value != evV)) {
-				t.Fatalf("kin=%d kout=%d size=%d Set(%d,%d) mismatch: real=%+v oracle=(%d,%d,%v)", kin, kout, size, key, val, e, evK, evV, evicted)
-			}
-		case opPeek:
-			var gv int
-			gp := tq.Peek(key)
-			if gp != nil {
-				gv = *gp
-			}
-			mv, mok := ora.peek(key)
-			if (gp != nil) != mok || (mok && gv != mv) {
-				t.Fatalf("kin=%d kout=%d size=%d Peek(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
-			}
-		case opRemove:
-			var gv int
-			gp := tq.Remove(key)
-			if gp != nil {
-				gv = *gp
-			}
-			mv, mok := ora.remove(key)
-			if (gp != nil) != mok || (mok && gv != mv) {
-				t.Fatalf("kin=%d kout=%d size=%d Remove(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", kin, kout, size, key, gv, gp != nil, mv, mok)
-			}
-		case opPurge:
-			tq.Purge()
-			ora.purge()
-		case opContains:
-			if got, want := tq.Contains(key), ora.contains(key); got != want {
-				t.Fatalf("kin=%d kout=%d size=%d Contains(%d) mismatch: real=%v oracle=%v", kin, kout, size, key, got, want)
-			}
-		case opKeys:
-			if got, want := tq.Keys(), ora.keys(); !slices.Equal(got, want) {
-				t.Fatalf("kin=%d kout=%d size=%d Keys mismatch: real=%v oracle=%v", kin, kout, size, got, want)
-			}
-		case opResetStats:
-			if got := tq.ResetStats(); got != want {
-				t.Fatalf("kin=%d kout=%d size=%d ResetStats returned %+v, want %+v", kin, kout, size, got, want)
-			}
-			want = Stats{}
-		}
-
-		if got := tq.Stats(); got != want {
-			t.Fatalf("kin=%d kout=%d size=%d Stats after op %d on key %d: %+v, want %+v", kin, kout, size, op, key, got, want)
-		}
-
-		checkIndex(t, tq)
-
-		if tq.Len() != ora.length() {
-			t.Fatalf("kin=%d kout=%d size=%d Len mismatch after op %d on key %d: real=%d oracle=%d", kin, kout, size, op, key, tq.Len(), ora.length())
+		if err := stepTwoQueue(tq, ora, &want, op, key, val); err != nil {
+			t.Fatalf("kin=%d kout=%d size=%d op #%d: %v", kin, kout, size, i/2, err)
 		}
 	}
+}
+
+// stepTwoQueue applies one operation to the real TwoQueue and the oracle
+// and reports the first divergence in its result, in Stats or in Len, or
+// a broken index. want tracks the Stats the oracle expects.
+func stepTwoQueue(tq *TwoQueue[int, int], ora *oracle2Q, want *Stats, op byte, key, val int) error {
+	switch op {
+	case opGet:
+		var gv int
+		gp := tq.Get(key)
+		if gp != nil {
+			gv = *gp
+		}
+		mv, mok := ora.get(key)
+		if (gp != nil) != mok || (mok && gv != mv) {
+			return fmt.Errorf("Get(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", key, gv, gp != nil, mv, mok)
+		}
+		if mok {
+			want.Hits++
+		} else {
+			want.Misses++
+		}
+	case opSet:
+		e := tq.Set(key, val)
+		evK, evV, evicted := ora.set(key, val)
+		if (e != nil) != evicted || (evicted && (e.Key != evK || e.Value != evV)) {
+			return fmt.Errorf("Set(%d,%d) mismatch: real=%+v oracle=(%d,%d,%v)", key, val, e, evK, evV, evicted)
+		}
+	case opPeek:
+		var gv int
+		gp := tq.Peek(key)
+		if gp != nil {
+			gv = *gp
+		}
+		mv, mok := ora.peek(key)
+		if (gp != nil) != mok || (mok && gv != mv) {
+			return fmt.Errorf("Peek(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", key, gv, gp != nil, mv, mok)
+		}
+	case opRemove:
+		var gv int
+		gp := tq.Remove(key)
+		if gp != nil {
+			gv = *gp
+		}
+		mv, mok := ora.remove(key)
+		if (gp != nil) != mok || (mok && gv != mv) {
+			return fmt.Errorf("Remove(%d) mismatch: real=(%v,%v) oracle=(%v,%v)", key, gv, gp != nil, mv, mok)
+		}
+	case opPurge:
+		tq.Purge()
+		ora.purge()
+	case opContains:
+		if got, want := tq.Contains(key), ora.contains(key); got != want {
+			return fmt.Errorf("Contains(%d) mismatch: real=%v oracle=%v", key, got, want)
+		}
+	case opKeys:
+		if got, want := tq.Keys(), ora.keys(); !slices.Equal(got, want) {
+			return fmt.Errorf("Keys mismatch: real=%v oracle=%v", got, want)
+		}
+	case opResetStats:
+		if got := tq.ResetStats(); got != *want {
+			return fmt.Errorf("ResetStats returned %+v, want %+v", got, *want)
+		}
+		*want = Stats{}
+	}
+
+	if got := tq.Stats(); got != *want {
+		return fmt.Errorf("Stats after op %d on key %d: %+v, want %+v", op, key, got, *want)
+	}
+	if err := indexError(tq); err != nil {
+		return fmt.Errorf("after op %d on key %d: %w", op, key, err)
+	}
+	if tq.Len() != ora.length() {
+		return fmt.Errorf("Len mismatch after op %d on key %d: real=%d oracle=%d", op, key, tq.Len(), ora.length())
+	}
+	return nil
 }
 
 func FuzzTwoQueueAgainstOracle(f *testing.F) {

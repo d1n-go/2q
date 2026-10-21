@@ -64,3 +64,19 @@ jobs:
           name: fuzz-failure-${{ strategy.job-index }}
           path: "**/testdata/fuzz/**"
           if-no-files-found: ignore
+
+  # TestTwoQueueExhaustive checks only small capacities on every push; the
+  # full set up to 2/2/2 takes about a minute and runs here.
+  exhaustive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Model-check TwoQueue up to 2/2/2
+        run: go test . -run '^TestTwoQueueExhaustive$' -exhaustive -v

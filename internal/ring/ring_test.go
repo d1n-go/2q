@@ -2,6 +2,7 @@ package ring
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -151,5 +152,46 @@ func TestRing_setValue(t *testing.T) {
 
 	if got := r.Value(i); got == nil || *got != 2 {
 		t.Fatalf("bad value after SetValue: %v", got)
+	}
+}
+
+func TestRing_nextPrev(t *testing.T) {
+	r := New[int, int](3)
+	for k := range 2 {
+		v := k
+		r.Evict(r.Back(), k, &v)
+	}
+
+	// Front to back: key 1, key 0, then the one empty slot.
+	var keys []int
+	for i := r.Next(int32(r.Cap())); int(i) != r.Cap(); i = r.Next(i) {
+		if r.Prev(r.Next(i)) != i {
+			t.Fatalf("slot %d: Prev(Next) = %d", i, r.Prev(r.Next(i)))
+		}
+		keys = append(keys, r.Key(i))
+	}
+	if want := []int{1, 0, 0}; !slices.Equal(keys, want) {
+		t.Fatalf("walk from the front gave keys %v, want %v", keys, want)
+	}
+	if r.Prev(int32(r.Cap())) != r.Back() {
+		t.Fatalf("Prev of the sentinel is %d, Back is %d", r.Prev(int32(r.Cap())), r.Back())
+	}
+}
+
+func TestRing_clone(t *testing.T) {
+	r := New[int, int](2)
+	v := 1
+	r.Evict(r.Back(), 1, &v)
+
+	c := r.Clone()
+	w := 2
+	c.Evict(c.Back(), 2, &w)
+	c.Remove(c.Back()) // the slot holding key 1
+
+	if r.Len() != 1 || !slices.Equal(r.AppendKeys(nil), []int{1}) {
+		t.Fatalf("changing the clone changed the original: len=%d keys=%v", r.Len(), r.AppendKeys(nil))
+	}
+	if c.Len() != 1 || !slices.Equal(c.AppendKeys(nil), []int{2}) {
+		t.Fatalf("clone: len=%d keys=%v, want 1 [2]", c.Len(), c.AppendKeys(nil))
 	}
 }

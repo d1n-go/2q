@@ -12,6 +12,7 @@ package ring
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // MaxSize is the largest ring New accepts: slots, and the sentinel that
@@ -103,6 +104,27 @@ func (r *Ring[K, V]) Value(i int32) *V {
 // position unchanged.
 func (r *Ring[K, V]) SetValue(i int32, v *V) {
 	r.nodes[i].value = v
+}
+
+// Next and Prev return the slot after and before slot i, walking from
+// front to back. Index Cap() is the sentinel: Next(Cap()) is the front
+// slot and Prev(Cap()) the back one. They let a caller walk every slot,
+// empty ones included, to inspect the ring.
+func (r *Ring[K, V]) Next(i int32) int32 {
+	return r.nodes[i].next
+}
+
+func (r *Ring[K, V]) Prev(i int32) int32 {
+	return r.nodes[i].prev
+}
+
+// Clone returns a ring with the same slots, links and length that shares
+// no storage with r. The values themselves are not copied: both rings
+// point at the same ones.
+func (r *Ring[K, V]) Clone() *Ring[K, V] {
+	c := *r
+	c.nodes = slices.Clone(r.nodes)
+	return &c
 }
 
 // Back returns the index of the back (least recently used/oldest) slot.

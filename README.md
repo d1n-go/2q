@@ -230,3 +230,5 @@ Four differential fuzz targets check the implementation against independent, pur
 
 Their seed corpora and fixed-seed property variants run as regular tests in CI on every push (with `-race`, and on a 32-bit `GOARCH=386` build), and a [scheduled workflow](.github/workflows/fuzz.yml) additionally fuzzes all four targets for 5 minutes daily with a corpus that persists across runs.
 
+For small caches, `2q_exhaustive_test.go` goes further than sampling: it model-checks `TwoQueue` against the same oracle by visiting **every** state a cache can reach (identified slot by slot, empty slots and links included) and applying every operation to each, so it covers operation sequences of any length. At each step the result must match the oracle and the queues must hold exactly the oracle's lists, ghost queue and order included. It runs on every push for every capacity split up to 2 per queue with a total of at most 4, over one key more than the queues hold; the scheduled workflow also runs the rest up to 2/2/2 (`-exhaustive`, 1.6 million states). This is a proof only within those bounds: a bug that needs a larger queue is left to the fuzz and property tests above.
+
