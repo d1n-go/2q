@@ -41,8 +41,11 @@ API is kept as is and extended (see [API](#api)); see
 
 The [`compat`](compat) module runs the fork in lockstep with the archived
 upstream packages against a slot-level model of their shared storage and
-checks that these two are the *only* behavioral differences; it is a separate
-module so the root stays dependency-free.
+checks that the last two are the *only* single-threaded behavioral
+differences; it is a separate module so the root stays dependency-free. The
+first one only shows under concurrency, which a lockstep comparison cannot
+observe: it holds by construction (every method runs entirely under the one
+lock), and the concurrency tests check its invariants under `-race`.
 
 ### Relation to the paper
 
