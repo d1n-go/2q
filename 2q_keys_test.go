@@ -1,6 +1,7 @@
 package twoqueue
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -86,5 +87,28 @@ func TestKeys(t *testing.T) {
 	}
 	if got := l.Keys(); len(got) != l.Len() {
 		t.Fatalf("len(Keys)=%d != Len()=%d", len(got), l.Len())
+	}
+}
+
+// BenchmarkKeys holds the number of cached keys fixed while the capacity
+// grows: Keys must cost O(Len), not O(capacity), since it runs under the
+// cache-wide lock.
+func BenchmarkKeys(b *testing.B) {
+	for _, size := range []int{1 << 10, 1 << 20} {
+		for _, n := range []int{0, 16} {
+			b.Run(fmt.Sprintf("size=%d/len=%d", size, n), func(b *testing.B) {
+				l := New[int, int](size)
+				for i := range n {
+					l.Set(i, i)
+				}
+				if l.Len() != n {
+					b.Fatalf("setup: Len=%d want %d", l.Len(), n)
+				}
+				b.ResetTimer()
+				for range b.N {
+					l.Keys()
+				}
+			})
+		}
 	}
 }
