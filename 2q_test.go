@@ -1,7 +1,9 @@
 package twoqueue
 
 import (
+	"fmt"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 )
 
@@ -61,23 +63,93 @@ func Benchmark2Q_Freq(b *testing.B) {
 // Benchmark2Q_ParallelGet measures Get under contention. Every operation
 // takes the single cache-wide lock, so total throughput drops as
 // GOMAXPROCS grows (ns/op here is per operation across all goroutines);
-// compare -cpu 1,4,8 to see the cost.
+// compare -cpu 1,4,8 to see the cost. The cases separate where a Get
+// lands, since a hit in Am also reorders it:
+//
+//   - am-hit reads a hot set that was promoted to Am;
+//   - a1in-hit reads keys set once, which A1in serves without reordering;
+//   - miss reads keys that were never set;
+//   - sharded/* repeat am-hit, and a 90% Get / 10% Set mix on the same hot
+//     set, against 64 independent caches of size/64, as README suggests.
+//
+// Setup verifies that every hot key sits in the intended queue.
 func Benchmark2Q_ParallelGet(b *testing.B) {
-	const size = 8192
-	l := New[int, int](size)
-	for i := range size {
-		l.Set(i, i)
-		l.Set(i, i)
+	const (
+		size = 8192
+		hot  = 1024 // a power of two, see the masks below
+	)
+
+	single := func(promote bool) func(int) *TwoQueue[int, int] {
+		l := New[int, int](size)
+		fillHot(l, 0, 1, hot, promote)
+		return func(int) *TwoQueue[int, int] { return l }
+	}
+	sharded := func() func(int) *TwoQueue[int, int] {
+		const shards = 64
+		var caches [shards]*TwoQueue[int, int]
+		for s := range caches {
+			caches[s] = New[int, int](size / shards)
+		}
+		for s, l := range caches {
+			fillHot(l, s, shards, hot/shards, true)
+		}
+		return func(k int) *TwoQueue[int, int] { return caches[k%shards] }
 	}
 
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			l.Get(i % size)
-			i++
+	run := func(name string, cacheFor func(int) *TwoQueue[int, int], offset int, setEvery int) {
+		b.Run(name, func(b *testing.B) {
+			var goroutines atomic.Int64
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				// Start each goroutine elsewhere in the hot set, so they
+				// do not walk the same keys (and shards) in lockstep.
+				i := int(goroutines.Add(1)) * 997
+				for pb.Next() {
+					k := offset + i&(hot-1)
+					if setEvery > 0 && i%setEvery == 0 {
+						cacheFor(k).Set(k, k)
+					} else {
+						cacheFor(k).Get(k)
+					}
+					i++
+				}
+			})
+		})
+	}
+
+	run("am-hit", single(true), 0, 0)
+	run("a1in-hit", single(false), 0, 0)
+	run("miss", single(true), size*4, 0)
+	run("sharded/am-hit", sharded(), 0, 0)
+	run("sharded/mix", sharded(), 0, 10)
+	run("mix", single(true), 0, 10)
+}
+
+// fillHot caches the n keys first, first+stride, first+2*stride, ... in
+// l: in Am if promote is set (paged out of A1in into the ghost queue by
+// fillers, then set again), otherwise in A1in. It panics unless every key
+// ends up there, so a benchmark cannot silently measure misses.
+func fillHot(l *TwoQueue[int, int], first, stride, n int, promote bool) {
+	keys := make([]int, n)
+	for i := range keys {
+		keys[i] = first + i*stride
+		l.Set(keys[i], keys[i])
+	}
+	want := inRecent
+	if promote {
+		want = inFrequent
+		for i := range l.recent.Cap() {
+			l.Set(-1-i, 0) // fillers: page every hot key out to A1out
 		}
-	})
+		for _, k := range keys {
+			l.Set(k, k)
+		}
+	}
+	for _, k := range keys {
+		if loc, ok := l.index[k]; !ok || loc.queue != want {
+			panic(fmt.Sprintf("fillHot: key %d is at %+v (indexed: %v), want queue %d", k, loc, ok, want))
+		}
+	}
 }
 
 func Test2Q(t *testing.T) {

@@ -124,19 +124,22 @@ through it yourself is not synchronized by the cache.
 Every method takes a single cache-wide mutex, `Get` included, because 2Q
 updates recency on reads. Under heavy concurrent access one cache does not
 just stop scaling, its total throughput **drops**: the cores spend their time
-handing the mutex's cache line back and forth. On an M1 Pro, `Get` on a warm
-cache takes about 14 ns from one goroutine and about 150 ns per operation
+handing the mutex's cache line back and forth. On an M1 Pro, `Get` of a key
+in Am takes about 17 ns from one goroutine and about 165 ns per operation
 (total, not per goroutine) from eight, i.e. roughly a tenth of the
-throughput; `go test -run '^$' -bench ParallelGet -cpu 1,4,8` reproduces it.
+throughput; hits in A1in and misses, which skip the LRU update, are only
+slightly cheaper (about 14 ns and 150 ns).
+`go test -run '^$' -bench ParallelGet -cpu 1,4,8` reproduces these and the
+numbers below.
 
 This only matters for a cache hit millions of times per second from many
 cores; next to a database or network round trip it is noise. Check a mutex
 profile first. If it does matter, shard: route each key by hash to one of N
 independent caches of size/N. With 64 shards and eight goroutines the same
-`Get` workload ran at about 20 ns/op, and a 90% `Get` / 10% `Set` mix at
-about 45 ns/op instead of 250. Each shard is its own 2Q, so eviction is
-per shard rather than global, which with a decent hash is statistically
-close.
+Am-hit workload ran at about 42 ns/op instead of 165, and a 90% `Get` / 10%
+`Set` mix at about 43 ns/op instead of 165. Each shard is its own 2Q, so
+eviction is per shard rather than global, which with a decent hash is
+statistically close.
 
 ## TTL
 
