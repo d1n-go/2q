@@ -195,12 +195,11 @@ func (r *Ring[K, V]) Remove(i int32) {
 
 // AppendKeys appends the keys of every occupied slot to dst, walking
 // from the front (most recently used/inserted) to the back, and returns
-// the extended slice.
+// the extended slice. Empty slots all sit at the back, so the walk stops
+// at the first one: it costs O(Len()), not O(Cap()).
 func (r *Ring[K, V]) AppendKeys(dst []K) []K {
-	for i := r.nodes[r.root].next; i != r.root; i = r.nodes[i].next {
-		if r.nodes[i].value != nil {
-			dst = append(dst, r.nodes[i].key)
-		}
+	for i := r.nodes[r.root].next; i != r.root && r.nodes[i].value != nil; i = r.nodes[i].next {
+		dst = append(dst, r.nodes[i].key)
 	}
 	return dst
 }

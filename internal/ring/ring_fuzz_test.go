@@ -19,6 +19,7 @@ func checkInvariants(t *testing.T, r *Ring[int, int], index map[int]int32) {
 	visited := make([]bool, n)
 	cur := r.root
 	count := 0
+	seenEmpty := false
 	for {
 		if visited[cur] {
 			t.Fatalf("cycle revisits node %d before covering all %d nodes (visited %d) -> ring is broken into multiple loops", cur, n, count)
@@ -32,6 +33,13 @@ func checkInvariants(t *testing.T, r *Ring[int, int], index map[int]int32) {
 		cur = next
 		if cur == r.root {
 			break
+		}
+		// Back, Evict and AppendKeys rely on the empty slots forming the
+		// tail of the list.
+		if r.nodes[cur].value == nil {
+			seenEmpty = true
+		} else if seenEmpty {
+			t.Fatalf("occupied slot %d follows an empty one: empty slots must all sit at the back", cur)
 		}
 	}
 	if count != n {
