@@ -62,7 +62,10 @@ const (
 // safe for concurrent mutation.
 //
 // A TwoQueue must be created with New or NewParams; the zero value is
-// not usable and its methods will panic with a nil dereference.
+// not usable and its methods will panic with a nil dereference. Use it
+// through the pointer they return and never copy the struct: a copy
+// would share the queues and index with the original but have its own
+// lock and counters, so operations on the two would race.
 //
 // Keys are stored in a Go map, so K must be comparable at run time as
 // well as at compile time. With an interface key type such as any, a
