@@ -163,10 +163,22 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 //   - With a zero-capacity queue (see NewParams) it can return the key and
 //     value just passed in, which were then not stored at all.
 //
-// A non-nil result therefore always carries a value that is no longer
-// reachable through the cache, so it is the place to release whatever that
-// value holds. The one caveat is re-setting a key to the value it already
-// has: the returned Value is then that same, still cached value.
+// A non-nil result therefore always carries a value that the returned key
+// no longer holds, which makes it the natural place to release whatever
+// that value owns (close a handle, return a buffer to a pool). The cache
+// does not track ownership, though, so do that only if nothing else can
+// still be using the value:
+//
+//   - the same value may be cached under another key: a pointer stored
+//     twice, or slices sharing one backing array;
+//   - re-setting a key to the value it already has returns that same,
+//     still cached value;
+//   - a pointer obtained from an earlier Get or Peek outlives the entry,
+//     and another goroutine may still be reading through it; the cache
+//     lock does not cover that.
+//
+// If values can be shared, release them under your own lifetime protocol,
+// such as a reference count, rather than straight from Set's result.
 func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	L.mu.Lock()
 	defer L.mu.Unlock()
