@@ -141,13 +141,19 @@ close.
 ## TTL
 
 The cache has no built-in expiry. You can wrap values into an `Expiring[T]`
-that releases its payload on a timer; `Valid` then returns `nil` once the TTL
-has passed. The cache entry itself stays until it is evicted normally — only
-the memory behind it is freed. This trades one `time.AfterFunc` timer per
-entry for eager release; if you only need lazy expiry, storing a deadline next
-to the value and comparing it in `Valid` is cheaper.
+that carries a deadline; `Valid` then returns `nil` once it has passed. Expiry
+is lazy: the entry, value included, stays cached until it is evicted, replaced
+or removed, so expired values never take more memory than the cache's capacity
+already allows. If expired entries crowding out live ones is a concern, size
+the cache for it rather than removing them on read: a `Remove` after a failed
+`Valid` can race with a concurrent `Set` of a fresh value.
 
-The example below is compiled and race-tested in
+Releasing the payload eagerly with a `time.AfterFunc` per entry looks
+tempting, but unless every timer is stopped when its entry is replaced, evicted
+or purged, each timer keeps its payload alive until it fires — memory then
+grows with the number of `Set`s per TTL, not with the cache size.
+
+The example below is compiled and tested in
 [`example_ttl_test.go`](example_ttl_test.go).
 
 <details>
@@ -156,39 +162,38 @@ The example below is compiled and race-tested in
 ```go
 import (
     "fmt"
-    "sync/atomic"
     "time"
 
     twoqueue "github.com/d1n-go/2q"
 )
 
-// Expiring wraps a value that releases itself after a TTL. The pointer
-// is held in a shared atomic box, so every copy of an Expiring (the one
-// stored in the cache, the one the timer closure captured) sees the same
-// state, and the timer goroutine can clear it while readers Load it
-// without a data race.
+// Expiring pairs a value with the moment it stops being valid. Expiry is
+// lazy: nothing runs when the TTL passes, Valid just stops returning the
+// value. The entry, value included, stays cached until it is evicted,
+// replaced or removed, so expired values take no more memory than the
+// cache's capacity already allows.
 type Expiring[T any] struct {
-    value *atomic.Pointer[T]
-}
-
-// Valid returns the value, or nil once the TTL has passed. It is nil-safe
-// so it can be chained directly onto a cache Get.
-func (e *Expiring[T]) Valid() *T {
-    if e == nil {
-        return nil
-    }
-    return e.value.Load()
+    value    T
+    deadline time.Time
 }
 
 func WithTTL[T any](value T, ttl time.Duration) Expiring[T] {
-    e := Expiring[T]{value: new(atomic.Pointer[T])}
-    e.value.Store(&value)
+    return Expiring[T]{value: value, deadline: time.Now().Add(ttl)}
+}
 
-    time.AfterFunc(ttl, func() {
-        e.value.Store(nil) // Release memory; the cache entry itself stays until evicted.
-    })
+// Valid returns the value, or nil once the TTL has passed. It is nil-safe
+// so it can be chained directly onto a cache Get, and the zero Expiring
+// counts as expired.
+func (e *Expiring[T]) Valid() *T {
+    return e.ValidAt(time.Now())
+}
 
-    return e
+// ValidAt is Valid as of the given time.
+func (e *Expiring[T]) ValidAt(now time.Time) *T {
+    if e == nil || !now.Before(e.deadline) {
+        return nil
+    }
+    return &e.value
 }
 
 func main() {
