@@ -37,7 +37,7 @@ API is kept as is and extended (see [API](#api)); see
   value when updating a key in the frequent queue, but `nil` when updating a
   key in the recent queue, silently dropping the old value. The fork returns
   the previous value in both cases, so a non-nil result always means "this
-  value is no longer in the cache" (see [API](#api)).
+  key no longer holds this value" (see [API](#api)).
 
 The [`compat`](compat) module runs the fork in lockstep with the archived
 upstream packages against a slot-level model of their shared storage and
@@ -107,9 +107,15 @@ call, or `nil`:
 - with a zero-capacity queue the pair just passed in can come back, because
   it was not stored at all.
 
-A non-nil result is therefore the place to release whatever a value holds
-(close a handle, return a buffer to a pool). The one caveat: re-setting a key
-to the value it already has returns that same, still cached value.
+A non-nil result is therefore the natural place to release whatever a value
+holds (close a handle, return a buffer to a pool) — but only if nothing else
+can still be using it. The cache does not track ownership: the same value may
+also be cached under another key (a pointer stored twice, slices sharing a
+backing array), re-setting a key to the value it already has returns that
+same, still cached value, and a pointer from an earlier `Get` or `Peek` may
+still be read by another goroutine after the entry is gone. If values can be
+shared, release them under your own lifetime protocol (e.g. a reference
+count) rather than straight from `Set`'s result.
 
 `Get`, `Peek` and `Remove` return pointers. A pointer stays valid after the
 entry is updated or evicted (the cache never writes through it), but writing
