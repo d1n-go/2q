@@ -111,9 +111,11 @@ type Stats struct {
 }
 
 // HitRate returns Hits / (Hits + Misses), or 0 if nothing was looked up.
+// The sum is taken in float64, so it cannot wrap around for counters
+// near math.MaxUint64 (from aggregated or user-built Stats).
 func (s Stats) HitRate() float64 {
-	if total := s.Hits + s.Misses; total > 0 {
-		return float64(s.Hits) / float64(total)
+	if total := float64(s.Hits) + float64(s.Misses); total > 0 {
+		return float64(s.Hits) / total
 	}
 	return 0
 }

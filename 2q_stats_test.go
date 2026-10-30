@@ -1,6 +1,9 @@
 package twoqueue
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestStats(t *testing.T) {
 	l := NewParams[int, int](2, 2, 2)
@@ -51,5 +54,30 @@ func TestStats(t *testing.T) {
 	s.Misses = 100
 	if l.Stats().Misses != 1 {
 		t.Fatal("modifying a Stats snapshot must not affect the cache")
+	}
+}
+
+func TestStatsHitRate(t *testing.T) {
+	const m = math.MaxUint64
+	for _, tc := range []struct {
+		s    Stats
+		want float64
+	}{
+		{Stats{}, 0},
+		{Stats{Hits: 1}, 1},
+		{Stats{Misses: 1}, 0},
+		{Stats{Hits: 3, Misses: 1}, 0.75},
+		{Stats{Hits: m}, 1},
+		{Stats{Misses: m}, 0},
+		// Hits+Misses overflows uint64 in all of these.
+		{Stats{Hits: m, Misses: 1}, 1},
+		{Stats{Hits: m, Misses: 2}, 1},
+		{Stats{Hits: 1, Misses: m}, math.Ldexp(1, -64)},
+		{Stats{Hits: m, Misses: m}, 0.5},
+	} {
+		got := tc.s.HitRate()
+		if got != tc.want || got < 0 || got > 1 {
+			t.Errorf("%+v.HitRate() = %v, want %v", tc.s, got, tc.want)
+		}
 	}
 }
