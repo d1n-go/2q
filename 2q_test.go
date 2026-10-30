@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+// Benchmark2Q_Rand and Benchmark2Q_Freq are kept identical to the
+// upstream benchmarks (themselves from hashicorp/golang-lru) so that the
+// fork/upstream comparison in README stays like for like. Read them with
+// that in mind: one b.N iteration of Rand is a Set plus a Get, the logged
+// ratio is hits/misses rather than a hit rate, and Freq builds a trace
+// of 2*b.N alternating keys but replays only its first half for both the
+// Sets and the Gets, so it reads back keys it has just written.
 func Benchmark2Q_Rand(b *testing.B) {
 	l := New[int64, int64](8196)
 
