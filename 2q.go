@@ -62,10 +62,11 @@ const (
 // safe for concurrent mutation.
 //
 // A TwoQueue must be created with New or NewParams; the zero value is
-// not usable and its methods will panic with a nil dereference. Use it
-// through the pointer they return and never copy the struct: a copy
-// would share the queues and index with the original but have its own
-// lock and counters, so operations on the two would race.
+// not usable: Set, Len, Keys and Purge panic on it with a nil
+// dereference, and the lookups merely report an empty cache. Use it
+// through the pointer the constructors return and never copy the struct:
+// a copy would share the queues and index with the original but have its
+// own lock and counters, so operations on the two would race.
 //
 // Keys are stored in a Go map, so K must be comparable at run time as
 // well as at compile time. With an interface key type such as any, a
@@ -74,8 +75,9 @@ const (
 // access would. Floating-point NaN keys are comparable but never equal
 // to themselves: a NaN entry can never be found again, and since a map
 // entry keyed by NaN cannot be deleted, every Set of a NaN key leaks an
-// index entry (the slot it took is recycled normally). Do not use NaN as
-// a key.
+// index entry, and a second one when the entry is paged out to the ghost
+// queue (the slots it took are recycled normally). Only Purge frees them.
+// Do not use NaN as a key.
 type TwoQueue[K comparable, V any] struct {
 	mu sync.Mutex
 	// index maps every key held by any of the three queues to where it
@@ -405,9 +407,9 @@ const MaxSize = ring.MaxSize
 // constant argument, in the spirit of make with a negative length, and
 // can never be a run-time condition of a correct program. The cache's
 // operations do not panic on a cache built here, whatever the sequence
-// of calls; the remaining ways to crash (unhashable interface keys, or a
-// capacity whose preallocation exhausts memory) come from the runtime
-// and are documented on TwoQueue.
+// of calls; the remaining ways to crash come from the runtime: an
+// unhashable interface key (see TwoQueue), or a capacity so large that
+// preallocating it here runs out of memory.
 func NewParams[K comparable, V any](Kin int, Kout int, size int) *TwoQueue[K, V] {
 	kin, kout, am := clampSize(Kin), clampSize(Kout), clampSize(size)
 	return &TwoQueue[K, V]{
@@ -430,10 +432,11 @@ func clampSize(n int) int {
 
 // New creates 2Q cache with predefined size splits. 25% of size goes to Kin, 50% to KOut and rest to Am size.
 //
-// The splits are truncated, so sizes below 4 leave Kin at zero and the
-// cache only stores keys that are Set at least twice (see NewParams);
-// size 1 yields a cache that never stores anything. Sizes of a few
-// hundred and up are the intended use.
+// The splits are truncated. A size that is not a multiple of 4 therefore
+// holds size-1 values rather than size (New(10) caches at most 2+7 = 9),
+// and sizes below 4 leave Kin at zero, so the cache only stores keys that
+// are Set at least twice (see NewParams); size 1 yields a cache that never
+// stores anything. Sizes of a few hundred and up are the intended use.
 func New[K comparable, V any](size int) *TwoQueue[K, V] {
 	return NewParams[K, V](
 		int(Default2QRecentRatio*float64(size)),
