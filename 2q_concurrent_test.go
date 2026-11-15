@@ -61,23 +61,85 @@ func TestTwoQueue_ConcurrentPromotionDoesNotDuplicateKey(t *testing.T) {
 	}
 }
 
+const (
+	stressKeyDomain   = 8
+	stressOpsPerG     = 20000
+	stressValueStride = 1 << 20 // > stressOpsPerG, so value/stressValueStride recovers the key
+)
+
+// stressOp applies the i-th operation of one goroutine's random stream to
+// key and returns what Set returned, or nil for any other operation.
+//
+// Half of the operations are Sets and Purge is rare (1 in 4096). With
+// Purge as likely as Set the cache is emptied as fast as it fills, so Am
+// hardly ever holds enough keys to evict.
+func stressOp(l *TwoQueue[int, int], r *rand.Rand, key, i int) *Evicted[int, int] {
+	switch op := r.Intn(64); {
+	case op < 32:
+		return l.Set(key, key*stressValueStride+i)
+	case op < 44:
+		l.Get(key)
+	case op < 50:
+		l.Remove(key)
+	case op < 53:
+		l.Peek(key)
+	case op < 56:
+		l.Contains(key)
+	case op == 56:
+		_ = l.Len()
+	case op == 57:
+		_ = l.Keys()
+	case op == 58:
+		_ = l.Stats()
+	case op == 59:
+		_ = l.ResetStats()
+	case op == 60 && r.Intn(64) == 0:
+		l.Purge()
+	default:
+		l.Get(key)
+	}
+	return nil
+}
+
 // TestTwoQueue_ConcurrentStress hammers one small cache from many
 // goroutines with a random mix of every public method over a tiny key
 // space (so the same keys constantly collide and migrate between queues),
 // then validates the cross-queue invariants once everything is quiescent.
 // Run under -race this also covers the internal queues, which no longer
 // carry locks of their own.
+//
+// Which transitions a run takes cannot be observed while it is concurrent,
+// so each configuration first replays one goroutine's stream alone and
+// requires that it reaches every one of them, eviction from a full Am
+// included: a mix that never fills the queues would pass vacuously.
 func TestTwoQueue_ConcurrentStress(t *testing.T) {
-	const (
-		keyDomain   = 8
-		opsPerG     = 20000
-		valueStride = 1 << 20 // > opsPerG, so value/valueStride recovers the key
-	)
 	goroutines := 4 * runtime.GOMAXPROCS(0)
 
 	type cfg struct{ kin, kout, size int }
 	for _, c := range []cfg{{1, 1, 1}, {2, 4, 2}, {2, 2, 4}, {0, 4, 4}} {
 		l := NewParams[int, int](c.kin, c.kout, c.size)
+
+		var paged, promoted, amEvicted int
+		r := rand.New(rand.NewSource(1))
+		for i := range stressOpsPerG {
+			key := r.Intn(stressKeyDomain)
+			from, known := queueOf(l, key)
+			e := stressOp(l, r, key, i)
+			switch evicted := e != nil && e.Key != key; {
+			case !known && evicted:
+				paged++ // a new key pushed the oldest one out of A1in
+			case known && from == inRecentEvict && evicted:
+				promoted++
+				amEvicted++ // a promotion found Am full
+			case known && from == inRecentEvict && e == nil:
+				promoted++
+			}
+		}
+		if (c.kin > 0 && paged == 0) || promoted == 0 || amEvicted == 0 {
+			t.Fatalf("kin=%d kout=%d size=%d: the op mix does not exercise the cache: %d A1in evictions, %d promotions, %d Am evictions",
+				c.kin, c.kout, c.size, paged, promoted, amEvicted)
+		}
+		checkNoDuplicateKeys(t, l, stressKeyDomain)
 
 		var wg sync.WaitGroup
 		for g := range goroutines {
@@ -85,43 +147,19 @@ func TestTwoQueue_ConcurrentStress(t *testing.T) {
 			go func(seed int64) {
 				defer wg.Done()
 				r := rand.New(rand.NewSource(seed))
-				for i := range opsPerG {
-					key := r.Intn(keyDomain)
-					switch r.Intn(64) {
-					case 0:
-						l.Get(key)
-					case 1:
-						l.Set(key, key*valueStride+i)
-					case 2:
-						l.Peek(key)
-					case 3:
-						l.Remove(key)
-					case 4:
-						_ = l.Len()
-					case 5:
-						l.Purge()
-					case 6:
-						l.Contains(key)
-					case 7:
-						_ = l.Keys()
-					case 8:
-						_ = l.Stats()
-					case 9:
-						_ = l.ResetStats()
-					default:
-						l.Get(key)
-					}
+				for i := range stressOpsPerG {
+					stressOp(l, r, r.Intn(stressKeyDomain), i)
 				}
-			}(int64(g + 1))
+			}(int64(g + 2))
 		}
 		wg.Wait()
 
-		checkNoDuplicateKeys(t, l, keyDomain)
+		checkNoDuplicateKeys(t, l, stressKeyDomain)
 
 		// Every remaining entry must still be readable and carry a value
 		// that some Set actually wrote for that key.
-		for k := range keyDomain {
-			if v := l.Peek(k); v != nil && *v/valueStride != k {
+		for k := range stressKeyDomain {
+			if v := l.Peek(k); v != nil && *v/stressValueStride != k {
 				t.Fatalf("kin=%d kout=%d size=%d: key %d holds foreign value %d", c.kin, c.kout, c.size, k, *v)
 			}
 		}
