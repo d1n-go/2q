@@ -97,3 +97,32 @@ func TestNew_SmallSizes(t *testing.T) {
 		t.Fatalf("New(4): key must be cached after one Set, got %v", v)
 	}
 }
+
+// TestNew_Splits pins the capacities New derives from size: 25% for A1in,
+// 50% for A1out and 75% for Am, each rounded down. The expected values are
+// written out rather than computed, so a changed ratio cannot hide behind
+// the same formula.
+func TestNew_Splits(t *testing.T) {
+	for _, tc := range []struct{ size, kin, kout, am int }{
+		{-8, 0, 0, 0},
+		{0, 0, 0, 0},
+		{1, 0, 0, 0},
+		{2, 0, 1, 1},
+		{3, 0, 1, 2},
+		{4, 1, 2, 3},
+		{5, 1, 2, 3},
+		{6, 1, 3, 4},
+		{7, 1, 3, 5},
+		{8, 2, 4, 6},
+		{10, 2, 5, 7},
+		{100, 25, 50, 75},
+		{101, 25, 50, 75},
+		{1023, 255, 511, 767},
+		{8192, 2048, 4096, 6144},
+	} {
+		l := New[int, int](tc.size)
+		if kin, kout, am := l.recent.Cap(), l.recentEvict.Cap(), l.frequent.Cap(); kin != tc.kin || kout != tc.kout || am != tc.am {
+			t.Errorf("New(%d): Kin/Kout/Am = %d/%d/%d, want %d/%d/%d", tc.size, kin, kout, am, tc.kin, tc.kout, tc.am)
+		}
+	}
+}

@@ -452,6 +452,28 @@ func TestForkAndUpstreamAgainstSlotModelProperty(t *testing.T) {
 	}
 }
 
+// TestNewAgainstSlotModel covers New, which the tests above bypass by
+// calling NewParams: both implementations must split size into the same
+// three capacities, 25% / 50% / 75% rounded down. The model is sized with
+// integer arithmetic instead of the float expression New uses, and the
+// key span follows from those sizes, so a queue of any other capacity
+// evicts at a different point and diverges.
+func TestNewAgainstSlotModel(t *testing.T) {
+	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 16, 33, 100, 101} {
+		kin, kout, size := n/4, n/2, 3*n/4
+		r := rand.New(rand.NewSource(int64(n)))
+		ops := make([]byte, 100000)
+		r.Read(ops)
+
+		t.Run(fmt.Sprintf("size=%d", n), func(t *testing.T) {
+			run(t, kin, kout, size, ops, []pair{
+				{"fork.New vs model", forkCache{fork.New[int, int](n)}, modelCache{newModel2Q(kin, kout, size, false, true)}},
+				{"upstream.New vs model", upstreamCache{upstream.New[int, int](n)}, modelCache{newModel2Q(kin, kout, size, true, false)}},
+			})
+		})
+	}
+}
+
 // TestKnownDivergence_ZeroKey documents the divergence for a never-used
 // slot: its key field is int's zero value, so evicting it makes upstream
 // drop the index entry of a real key 0 stored elsewhere.
