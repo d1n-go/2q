@@ -62,8 +62,9 @@ const (
 // safe for concurrent mutation.
 //
 // A TwoQueue must be created with New or NewParams; the zero value is
-// not usable: Set, Len, Keys and Purge panic on it with a nil
-// dereference, and the lookups merely report an empty cache. Use it
+// not usable: Set, Len, Keys and Purge panic on it (also on a nil
+// *TwoQueue) with a message saying so, and the lookups merely report an
+// empty cache. Use it
 // through the pointer the constructors return and never copy the struct:
 // a copy would share the queues and index with the original but have its
 // own lock and counters, so operations on the two would race.
@@ -188,6 +189,8 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 // If values can be shared, release them under your own lifetime protocol,
 // such as a reference count, rather than straight from Set's result.
 func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
+	L.mustBeConstructed()
+
 	// Such a key could never be found or removed again; storing it would
 	// only leak index entries until Purge.
 	if key != key {
@@ -216,6 +219,16 @@ func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
 	default: // inRecentEvict: seen again while remembered, promote.
 		L.recentEvict.Remove(loc.slot)
 		return L.pushFrequent(key, value)
+	}
+}
+
+// mustBeConstructed panics with a clear message if L is nil or a zero
+// value, instead of letting the first queue access fail with a nil
+// dereference. It runs before the lock is taken, so a recovered panic
+// leaves the mutex free.
+func (L *TwoQueue[K, V]) mustBeConstructed() {
+	if L == nil || L.recent == nil {
+		panic("twoqueue: TwoQueue must be created with New or NewParams")
 	}
 }
 
@@ -293,6 +306,8 @@ func (L *TwoQueue[K, V]) Contains(key K) bool {
 // to oldest. It does not modify recency. The slice is freshly allocated
 // and may be modified by the caller.
 func (L *TwoQueue[K, V]) Keys() []K {
+	L.mustBeConstructed()
+
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
@@ -325,6 +340,8 @@ func (L *TwoQueue[K, V]) ResetStats() Stats {
 // that track recent evictions, so the cache behaves as freshly created.
 // Capacity is unchanged and the preallocated storage is kept.
 func (L *TwoQueue[K, V]) Purge() {
+	L.mustBeConstructed()
+
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
@@ -336,6 +353,8 @@ func (L *TwoQueue[K, V]) Purge() {
 
 // Len returns size of cache (frequent + recent items).
 func (L *TwoQueue[K, V]) Len() int {
+	L.mustBeConstructed()
+
 	L.mu.Lock()
 	defer L.mu.Unlock()
 
