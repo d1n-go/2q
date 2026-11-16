@@ -126,3 +126,36 @@ func TestNew_Splits(t *testing.T) {
 		}
 	}
 }
+
+// TestZeroValue_PanicsWithClearMessage pins the documented behavior of a
+// TwoQueue that was not made by New or NewParams: the operations that
+// need the queues panic with an explanatory message, and the lookups
+// report an empty cache.
+func TestZeroValue_PanicsWithClearMessage(t *testing.T) {
+	const want = "twoqueue: TwoQueue must be created with New or NewParams"
+
+	ops := map[string]func(*TwoQueue[int, int]){
+		"Set":   func(l *TwoQueue[int, int]) { l.Set(1, 1) },
+		"Len":   func(l *TwoQueue[int, int]) { l.Len() },
+		"Keys":  func(l *TwoQueue[int, int]) { l.Keys() },
+		"Purge": func(l *TwoQueue[int, int]) { l.Purge() },
+	}
+
+	for name, op := range ops {
+		for recv, l := range map[string]*TwoQueue[int, int]{"zero": new(TwoQueue[int, int]), "nil": nil} {
+			func() {
+				defer func() {
+					if got := recover(); got != want {
+						t.Errorf("%s on %s value: panic = %v, want %q", name, recv, got, want)
+					}
+				}()
+				op(l)
+			}()
+		}
+	}
+
+	var l TwoQueue[int, int]
+	if l.Contains(1) || l.Get(1) != nil || l.Peek(1) != nil || l.Remove(1) != nil {
+		t.Fatal("lookups on a zero value must report an empty cache")
+	}
+}
