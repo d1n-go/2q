@@ -72,12 +72,12 @@ const (
 // well as at compile time. With an interface key type such as any, a
 // key whose dynamic type is not comparable (a slice, map or func) makes
 // the operation panic with "hash of unhashable type", exactly as a map
-// access would. Floating-point NaN keys are comparable but never equal
-// to themselves: a NaN entry can never be found again, and since a map
-// entry keyed by NaN cannot be deleted, every Set of a NaN key leaks an
-// index entry, and a second one when the entry is paged out to the ghost
-// queue (the slots it took are recycled normally). Only Purge frees them.
-// Do not use NaN as a key.
+// access would. Floating-point NaN keys (also inside a struct, array or
+// interface key) are comparable but never equal to themselves, so they
+// could never be found again, and a map entry keyed by NaN cannot be
+// deleted. Set therefore refuses them: it stores nothing and returns the
+// key and value as not held (see Set), and Get, Peek, Contains and Remove
+// report a NaN key as absent.
 type TwoQueue[K comparable, V any] struct {
 	mu sync.Mutex
 	// index maps every key held by any of the three queues to where it
@@ -167,6 +167,9 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 //     room: the oldest entry of A1in, or the least recently used one of Am.
 //   - With a zero-capacity queue (see NewParams) it can return the key and
 //     value just passed in, which were then not stored at all.
+//   - A key that is not equal to itself (a NaN float, or a struct, array
+//     or interface holding one) is never stored: Set returns the key and
+//     value just passed in and changes nothing else.
 //
 // A non-nil result therefore always carries a value that the returned key
 // no longer holds, which makes it the natural place to release whatever
@@ -185,6 +188,12 @@ func (L *TwoQueue[K, V]) Get(key K) *V {
 // If values can be shared, release them under your own lifetime protocol,
 // such as a reference count, rather than straight from Set's result.
 func (L *TwoQueue[K, V]) Set(key K, value V) *Evicted[K, V] {
+	// Such a key could never be found or removed again; storing it would
+	// only leak index entries until Purge.
+	if key != key {
+		return &Evicted[K, V]{key, value}
+	}
+
 	L.mu.Lock()
 	defer L.mu.Unlock()
 

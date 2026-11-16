@@ -38,11 +38,17 @@ API is kept as is and extended (see [API](#api)); see
   key in the recent queue, silently dropping the old value. The fork returns
   the previous value in both cases, so a non-nil result always means "this
   key no longer holds this value" (see [API](#api)).
+- **NaN keys are refused.** A key that is not equal to itself (a NaN float, or
+  a struct, array or interface holding one) can never be found or deleted from
+  the underlying map again. Upstream stored it anyway and leaked an index entry
+  on every `Set` until the cache was dropped; here `Set` stores nothing and
+  returns the key and value as not held, and lookups report it as absent.
 
 The [`compat`](compat) module runs the fork in lockstep with the archived
 upstream packages against a slot-level model of their shared storage and
-checks that the last two are the *only* single-threaded behavioral
-differences; it is a separate module so the root stays dependency-free. The
+checks that the middle two are the *only* single-threaded behavioral
+differences for keys that equal themselves; it is a separate module so the
+root stays dependency-free. The
 first one only shows under concurrency, which a lockstep comparison cannot
 observe: it holds by construction (every method runs entirely under the one
 lock), and the concurrency tests check its invariants under `-race`.
