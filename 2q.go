@@ -409,7 +409,13 @@ const MaxSize = ring.MaxSize
 // operations do not panic on a cache built here, whatever the sequence
 // of calls; the remaining ways to crash come from the runtime: an
 // unhashable interface key (see TwoQueue), or a capacity so large that
-// preallocating it here runs out of memory.
+// preallocating it here runs out of memory. On 32-bit platforms int is
+// 32 bits wide, so a capacity at or near MaxSize overflows the slot
+// count (size+1) or the index hint (Kin+Kout+size) and make panics
+// instead; use capacities far below MaxSize there.
+//
+// The limit applies to each queue separately, not to the sum, and New
+// checks the size of its largest split rather than size itself.
 func NewParams[K comparable, V any](Kin int, Kout int, size int) *TwoQueue[K, V] {
 	kin, kout, am := clampSize(Kin), clampSize(Kout), clampSize(size)
 	return &TwoQueue[K, V]{
