@@ -89,7 +89,7 @@ func main() {
 
 | Method | |
 |---|---|
-| `New(size)`, `NewParams(Kin, Kout, size)` | Create a cache; `New` splits `size` 25% / 50% / 75% into A1in / A1out (ghost keys) / Am, each rounded down, so it holds `size` values when `size` is a multiple of 4 and `size-1` otherwise. Capacities above `MaxSize` panic. |
+| `New(size)`, `NewParams(Kin, Kout, size)` | Create a cache; `New` splits `size` 25% / 50% / 75% into A1in / A1out (ghost keys) / Am, each rounded down, so it holds `size` values when `size` is a multiple of 4 and `size-1` otherwise. Any single queue capacity above `MaxSize` panics (for `New`, its largest split, so sizes above about `MaxSize/0.75`). On 32-bit platforms capacities near `MaxSize` panic inside `make` from `int` overflow. |
 | `Get(key) *V` | Look up a value; refreshes recency in Am. Counted in `Stats`. |
 | `Peek(key) *V`, `Contains(key) bool` | Look up without touching recency or `Stats`. |
 | `Set(key, value) *Evicted[K, V]` | Store a value; see below for the result. |
