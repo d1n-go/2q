@@ -18,7 +18,7 @@ func assertNaNRefused[K comparable](t *testing.T, l *TwoQueue[K, int], nan K, ch
 
 	before := struct{ len, index, ghost int }{l.Len(), len(l.index), l.recentEvict.Len()}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		e := l.Set(nan, 42+i)
 		if e == nil || e.Value != 42+i || !check(e.Key) {
 			t.Fatalf("Set(NaN) must return the pair just passed in, got %+v", e)
